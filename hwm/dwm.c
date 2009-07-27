@@ -620,8 +620,10 @@ focusset(void)
 {
 	if (tempFocus) {
 		tempFocus = False;
-		detach(sel);
-		attach(sel);
+		if (sel != NULL) {
+			detach(sel);
+			attach(sel);
+		}
 	}
 	drawbar();
 }
