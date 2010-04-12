@@ -6,14 +6,6 @@
 
 static int borderpx = 1;
 static const char font[] = "-*-fixed-*-*-*-*-7-*-*-*-*-*-*-*";
-static const char bgbgcolor[] = "#c0c0c0";
-static const char bgfgcolor[] = "#000080";
-static const int bgw = 9;
-static const int bgh = 2;
-static const unsigned char bg[] = {
-	0x88, 0x00,
-	0x22, 0x00,
-};
 static const char normbordercolor[] = "#000000";
 static const char normbgcolor[] = "#c0c0c0";
 static const char normfgcolor[] = "#000000";
@@ -31,37 +23,33 @@ static int warn_wait_s = 5;
 static const char workspace[][WORKSPACE_NAME_MAX] = {"1", "2", "3", "4", "5", "6"};
 static int workspaceCur = 0;
 
-static const char *cmd_amixerLower[] = { "amixer", "-q", "set", "Master", "1-", NULL };
-static const char *cmd_amixerRaise[] = { "amixer", "-q", "set", "Master", "1+", NULL };
 static const char *cmd_dmenu[] = { "dmenu_run", "-i", "-fn", font, "-nb", normbgcolor, "-nf", normfgcolor, "-sb", selbgcolor, "-sf", selfgcolor, NULL };
-static const char *cmd_term[] = { "uxterm", NULL };
+static const char *cmd_term[] = { "uxterm", "-kt", "vt220", NULL };
 
 static struct Key keys[] = {
-	{ControlMask | Mod4Mask,	XK_r,		restart,	{0}},
-	{ControlMask | Mod4Mask,	XK_q,		quit,		{0}},
-	{ControlMask | Mod4Mask,	XK_space,	zoom,		{.i = 1}},
-	{ControlMask | Mod4Mask,	XK_x,		killclient,	{0}},
-	{0,				XF86XK_AudioLowerVolume,	spawn,		{.v = cmd_amixerLower}},
-	{0,				XF86XK_AudioRaiseVolume,	spawn,		{.v = cmd_amixerRaise}},
-	WORKSPACEKEYS(			XK_1,				0),
-	WORKSPACEKEYS(			XK_2,				1),
-	WORKSPACEKEYS(			XK_3,				2),
-	WORKSPACEKEYS(			XK_4,				3),
-	WORKSPACEKEYS(			XK_5,				4),
-	WORKSPACEKEYS(			XK_6,				5),
-	{Mod4Mask,			XK_Left,	viewstep,	{.i = -1}},
-	{Mod4Mask,			XK_Right,	viewstep,	{.i = +1}},
-	{Mod1Mask,			XK_Tab,		nextfocus,	{.i = +1}},
-	{Mod4Mask,			XK_a,		spawn,		{.v = cmd_term}},
-	{Mod4Mask,			XK_p,		spawn,		{.v = cmd_dmenu}},
-	{Mod4Mask,			XK_l,		nextlang,	{.i = +1}},
-	{Mod4Mask,			XK_m,		furnish,	{0}},
-	{Mod1Mask|Mod4Mask,		XK_Left,	keymove,	{.i = 0}},
-	{Mod1Mask|Mod4Mask,		XK_Up,		keymove,	{.i = 1}},
-	{Mod1Mask|Mod4Mask,		XK_Right,	keymove,	{.i = 2}},
-	{Mod1Mask|Mod4Mask,		XK_Down,	keymove,	{.i = 3}},
-	{Mod4Mask,			XK_s,		nextstatus,	{0}},
-	{Mod4Mask,			XK_space,	zoom,		{.i = 0}},
+	{ControlMask | Mod4Mask,XK_r,		restart,	{0}},
+	{ControlMask | Mod4Mask,XK_q,		quit,		{0}},
+	{ControlMask | Mod4Mask,XK_x,		killclient,	{0}},
+	WORKSPACEKEYS(		XK_1,				0),
+	WORKSPACEKEYS(		XK_2,				1),
+	WORKSPACEKEYS(		XK_3,				2),
+	WORKSPACEKEYS(		XK_4,				3),
+	WORKSPACEKEYS(		XK_5,				4),
+	WORKSPACEKEYS(		XK_6,				5),
+	{Mod4Mask,		XK_Left,	viewstep,	{.i = -1}},
+	{Mod4Mask,		XK_Right,	viewstep,	{.i = +1}},
+	{Mod4Mask,		XK_Tab,		nextfocus,	{.i = +1}},
+	{Mod4Mask,		XK_a,		spawn,		{.v = cmd_term}},
+	{Mod4Mask,		XK_p,		spawn,		{.v = cmd_dmenu}},
+	{Mod4Mask,		XK_l,		nextlang,	{.i = +1}},
+	{Mod4Mask,		XK_m,		furnish,	{0}},
+	{Mod1Mask | Mod4Mask,	XK_Left,	keymove,	{.i = 0}},
+	{Mod1Mask | Mod4Mask,	XK_Up,		keymove,	{.i = 1}},
+	{Mod1Mask | Mod4Mask,	XK_Right,	keymove,	{.i = 2}},
+	{Mod1Mask | Mod4Mask,	XK_Down,	keymove,	{.i = 3}},
+	{Mod4Mask,		XK_s,		nextstatus,	{0}},
+	{Mod4Mask,		XK_space,	zoom,		{.i = 0}},
+	{Mod1Mask | Mod4Mask,	XK_space,	zoom,		{.i = 1}},
 };
 
 static struct Button buttons[] = {

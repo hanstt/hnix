@@ -1,20 +1,17 @@
 include config.mk
 
-all: dwm.o
-	${CC} -o dwm $^ ${LDFLAGS}
-
-dwm.o: dwm.c config.h
-	${CC} -c ${CFLAGS} $<
+all: hwm.c config.h
+	${CC} ${CFLAGS} -o hwm hwm.c ${LDFLAGS}
 
 clean:
-	rm -f dwm dwm.o
+	rm -f hwm hwm.o
 
 install: all
 	mkdir -p ${PREFIX}/bin
-	cp -f dwm ${PREFIX}/bin
-	chmod 755 ${PREFIX}/bin/dwm
+	cp -f hwm ${PREFIX}/bin
+	chmod 755 ${PREFIX}/bin/hwm
 
 uninstall:
-	rm -f ${PREFIX}/bin/dwm
+	rm -f ${PREFIX}/bin/hwm
 
 .PHONY: all clean dist install uninstall
