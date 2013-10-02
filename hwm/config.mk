@@ -1,12 +1,12 @@
-PREFIX=/opt
+PREFIX=~/opt
 
 LIBS=-lX11
 
-#CPPFLAGS+=-DXINERAMA
-#LIBS+=-lXinerama
+CPPFLAGS+=-DXINERAMA
+LIBS+=-lXinerama
 
-#CPPFLAGS+=-DXKB
-#LIBS+=-lxkbfile
+CPPFLAGS+=-DXKB
+LIBS+=-lxkbfile
 
 CFLAGS=-ggdb -std=c99 -pedantic-errors -Wall -Wmissing-prototypes -Wswitch-enum ${CPPFLAGS}
 LDFLAGS=${LIBS}
