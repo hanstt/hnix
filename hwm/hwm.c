@@ -1,1926 +1,1667 @@
 /*
  * TODO:
- * Dividers in bar.
- * Window order on alt-tabbing does not always update.
- * Firefox and Pidgin chat window stop clicks in bar.
- * New window focusIng not consistent.
- * MPlayer resize on window size differences.
+ * Better client placement with fudge (mm, fudge).
  */
 
+#include <sys/queue.h>
 #include <sys/time.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <errno.h>
-#include <locale.h>
-#include <signal.h>
+#include <assert.h>
+#include <iconv.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <X11/XF86keysym.h>
-#include <X11/Xatom.h>
-#include <X11/Xlib.h>
-#include <X11/Xproto.h>
-#include <X11/Xutil.h>
+#include <xcb/xcb.h>
+#include <xcb/xcb_event.h>
+#include <xcb/xcb_icccm.h>
 #include <X11/cursorfont.h>
-#include <X11/keysym.h>
-#if defined XINERAMA
-#include <X11/extensions/Xinerama.h>
-#endif
-#if defined XKB
-#include <X11/XKBlib.h>
-#endif
 
-#define CLEANMASK(mask) (mask & ~(numlockmask | LockMask))
-#define INRECT(X,Y,RX,RY,RW,RH) ((X) >= (RX) && (X) < (RX) + (RW) && (Y) >= (RY) && (Y) < (RY) + (RH))
-#define LENGTH(x) (sizeof x / sizeof x[0])
+#define CONVERGE(op, ref, test, cur) do {\
+	if (ref op test && test op cur) {\
+		cur = test;\
+	}\
+} while (0)
+#define EVENT_MAX 30
+#define HEIGHT(client) (1 + (client)->height + 1)
+#define HWM_XCB_CHECKED(msg, func, args) do {\
+	xcb_void_cookie_t cookie_;\
+	xcb_generic_error_t *error_;\
+	cookie_ = func args;\
+	if ((error_ = xcb_request_check(g_conn, cookie_))) {\
+		fprintf(stderr, msg" (%u,%u,0x%08x,%d,%d).\n",\
+		    error_->response_type, error_->error_code,\
+		    error_->resource_id, error_->minor_code,\
+		    error_->major_code);\
+	}\
+} while (0)
+#define LENGTH(arr) (sizeof arr / sizeof arr[0])
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define WORKSPACE_NAME_MAX 16
-#define MOUSEMASK (ButtonPressMask | ButtonReleaseMask | PointerMotionMask)
-#define WIDTH(c) ((c)->w + 2 * (c)->bw)
-#define HEIGHT(c) ((c)->h + 2 * (c)->bw)
-#define TEXTW(x) (textnw(x, strlen(x)) + dc.font.height)
-#define WORKSPACE_NUM LENGTH(workspace_label)
+#define NAME_LEN 80
+#define SNAP(op, ref, test, margin) do {\
+	if (ref op test && test op margin) {\
+		test = ref;\
+	}\
+} while (0)
+#define WIDTH(client) (1 + (client)->width + 1)
 
-enum {
-	CLK_CLIENT,
-	CLK_ROOT,
-	CLK_STATUS,
-	CLK_TITLE,
-	CLK_WORKSPACE,
-	CLK_LAST
-};
-enum {
-	COL_BG,
-	COL_BORDER,
-	COL_FG,
-	COL_LAST
-};
-enum {
-	CUR_NORMAL,
-	CUR_RESIZE,
-	CUR_MOVE,
-	CUR_LAST
-};
-enum {
-	NET_SUPPORTED,
-	NET_WM_NAME,
-	NET_LAST
-};
-enum {
-	WM_DELETE,
-	WM_PROTOCOLS,
-	WM_STATE,
-	WM_LAST
-};
+enum Click { CLICK_ROOT, CLICK_WORKSPACE, CLICK_STATUS, CLICK_CLIENT };
+enum JumpDirection { JUMP_EAST, JUMP_NORTH, JUMP_WEST, JUMP_SOUTH };
+enum Maximize { MAX_NOPE, MAX_BOTH, MAX_VERT };
+enum RunControl { RUN_LOOP, RUN_QUIT, RUN_RESTART };
+enum Visibility { VISIBLE, HIDDEN };
 
-union Arg {
+struct Arg {
 	int	i;
-	float	f;
-	void	*v;
+	void	const *v;
 };
-struct Button {
-	int	click;
-	int	mask;
-	int	button;
-	void	(*func)(const union Arg *arg);
-	const	union Arg arg;
+struct String {
+	size_t	length;
+	char	str[NAME_LEN];
 };
+TAILQ_HEAD(ClientList, Client);
 struct Client {
-	char	name[256];
-	float	mina;
-	int	maxa;
-	int	x;
-	int	y;
-	int	w;
-	int	h;
-	int	basew;
-	int	baseh;
-	int	incw;
-	int	inch;
-	int	maxw;
-	int	maxh;
-	int	minw;
-	int	minh;
-	int	bw;
-	int	oldbw;
-	int	workspace;
-	Bool	isurgent;
-	struct	Client *prev;
-	struct	Client *next;
-	Window	win;
-#if defined XKB
-	int	xkbGroupIdx;
-#endif
-	struct {
-		int	mode;
-		int	oldx;
-		int	oldy;
-		int	oldw;
-		int	oldh;
-	} zoom;
+	xcb_window_t	window;
+	xcb_size_hints_t	hints;
+	int	is_urgent;
+	struct	String name;
+	int	x, y;
+	int	width, height;
+	enum	Maximize maximize;
+	int	max_old_x, max_old_y;
+	int	max_old_width, max_old_height;
+	TAILQ_ENTRY(Client)	next;
 };
-struct DC {
-	int	x;
-	int	y;
-	int	w;
-	int	h;
-	long	norm[COL_LAST];
-	long	sel[COL_LAST];
-	long	warn[2][COL_LAST];
-	Drawable	drawable;
-	GC	gc;
-	struct {
-		int	ascent;
-		int	descent;
-		int	height;
-		XFontSet	set;
-		XFontStruct	*xfont;
-	} font;
+struct ButtonBind {
+	enum	Click click;
+	int	code;
+	int	state;
+	void	(*action)(struct Arg const *);
 };
-struct Key {
-	int	mod;
-	KeySym	keysym;
-	void	(*func)(const union Arg *);
-	const	union Arg arg;
+struct KeyBind {
+	int	code;
+	int	state;
+	void	(*action)(struct Arg const *);
+	struct	Arg const arg;
 };
 
-static void		 arrange(void);
-static void		 attach(struct Client *);
-static void		 buttonPress(XEvent *);
-static void		 wmCheckOther(void);
-static void		 cleanup(void);
-static void		 clearUrgent(struct Client *);
-static void		 configure(struct Client *);
-static void		 configureNotify(XEvent *);
-static void		 configureRequest(XEvent *);
-static void		 destroyNotify(XEvent *);
-static void		 detach(struct Client *);
-static void		 die(const char *, ...);
-static void		 drawBar(void);
-static void		 drawSquare(Bool, Bool, Bool, long [COL_LAST]);
-static void		 drawText(const char *, long [COL_LAST], Bool);
-static void		 enterNotify(XEvent *);
-static void		 expose(XEvent *);
-static void		 focus(struct Client *);
-static void		 focusIn(XEvent *);
-static void		 focusSet(void);
-static void              furnish(const union Arg *);
-static struct Client	*clientGet(Window);
-static long		 colorGet(const char *);
-static long		 getstate(Window ww);
-static Bool		 gettextprop(Window, Atom, char *, int);
-static void		 grabbuttons(struct Client *, Bool);
-static void		 grabkeys(void);
-static Bool		 isprotodel(struct Client *);
-static void		 keymove(const union Arg *);
-static void		 keypress(XEvent *);
-static void		 keyrelease(XEvent *);
-static void		 killclient(const union Arg *);
-static void		 manage(Window, XWindowAttributes *);
-static void		 maprequest(XEvent *);
-static void		 mousemove(const union Arg *);
-static void		 mouseresize(const union Arg *);
-static void		 nextfocus(const union Arg *);
-static void		 nextlang(const union Arg *);
-static void		 nextstatus(const union Arg *);
-static void		 place(struct Client *);
-static void		 propertynotify(XEvent *);
-static void		 quit(const union Arg *);
-static void		 raisesel(void);
-static void		 resize(struct Client *, int, int, int, int, Bool);
-static void		 restart(const union Arg *);
-static void		 run(void);
-static void		 scan(void);
-static void		 clientStateSet(struct Client *, long);
-static void		 setup(void);
-static void		 sigchld(int);
-static void		 snapClient(struct Client *, int *, int *, int, int,
-    int, int);
-static void		 spawn(const union Arg *);
-static int		 textnw(const char *, int);
-static void		 workspaceTo(const union Arg *);
-static void		 unmanage(struct Client *);
-static void		 unmapNotify(XEvent *);
-static void		 updateBar(void);
-static void		 updategeom(void);
-static void		 updatenumlockmask(void);
-static void		 updateSizeHints(struct Client *);
-static void		 updateStatus(void);
-static void		 updateTitle(struct Client *);
-static void		 wmHintsUpdate(struct Client *);
-static void		 view(const union Arg *);
-static void		 viewStep(const union Arg *);
-static int		 xerror(Display *, XErrorEvent *);
-static int		 xerrorcheck(Display *, XErrorEvent *);
-static int		 xerrordummy(Display *, XErrorEvent *);
-static void		 zoom(const union Arg *);
+static void		action_client_browse(struct Arg const *);
+static void		action_client_jump(struct Arg const *);
+static void		action_client_maximize(struct Arg const *);
+static void		action_client_move(struct Arg const *);
+static void		action_client_relocate(struct Arg const *);
+static void		action_client_resize(struct Arg const *);
+static void		action_exec(struct Arg const *);
+static void		action_furnish(struct Arg const *);
+static void		action_quit(struct Arg const *);
+static void		action_restart(struct Arg const *);
+static void		action_workspace_select(struct Arg const *);
+static xcb_atom_t	atom_get(char const *);
+static void		bar_draw(void);
+static void		button_grab(struct Client *);
+static struct Client	*client_add(xcb_window_t);
+static struct Client	*client_add_details(xcb_window_t, int const *);
+static void		client_delete(struct Client *);
+static void		client_focus(struct Client *, int, int);
+static struct Client	*client_get(xcb_window_t, int *);
+static void		client_move(struct Client *, enum Visibility);
+static void		client_name_update(struct Client *);
+static void		client_place(struct Client *);
+static void		client_resize(struct Client *, int);
+static void		client_snap_dimension(struct Client *);
+static void		client_snap_position(struct Client *);
+static uint32_t		color_get(char const *);
+static xcb_cursor_t	cursor_get(xcb_font_t, int);
+static void		die(char const *, ...);
+static void		event_button_press(xcb_generic_event_t const *);
+static void		event_configure_notify(xcb_generic_event_t const *);
+static void		event_configure_request(xcb_generic_event_t const *);
+static void		event_destroy_notify(xcb_generic_event_t const *);
+static void		event_enter_notify(xcb_generic_event_t const *);
+static void		event_expose(xcb_generic_event_t const *);
+static void		event_handle(xcb_generic_event_t const *);
+static void		event_key_press(xcb_generic_event_t const *);
+static void		event_map_request(xcb_generic_event_t const *);
+static void		event_property_notify(xcb_generic_event_t const *);
+static void		event_unmap_notify(xcb_generic_event_t const *);
+static void		root_name_update(void);
+static void		string_convert(struct String *, char const *, size_t);
+static int		text_draw(struct String const *, int, int, int, int);
+static int		text_width(struct String const *);
 
-#include "config.h"
+/* Config { */
 
-#if defined XKB
-static int xkb_event;
-static int xkb_grpNum = -1;
-static char xkb_grpName[XkbNumKbdGroups][64];
-#endif
-static int swarn = 0;
-static int sidx = 0;
-static char stext[256];
-static int connection;
-static int screen;
-static int sx, sy, sw, sh;
-static int by;
-static int wx, wy, ww, wh;
-static int (*xerrorxlib)(Display *, XErrorEvent *);
-static int modifiers[4];
-static int numlockmask = 0;
-static void (*handler[LASTEvent])(XEvent *) = {
-	[ButtonPress] = buttonPress,
-	[ConfigureNotify] = configureNotify,
-	[ConfigureRequest] = configureRequest,
-	[DestroyNotify] = destroyNotify,
-	[EnterNotify] = enterNotify,
-	[Expose] = expose,
-	[FocusIn] = focusIn,
-	[KeyPress] = keypress,
-	[KeyRelease] = keyrelease,
-	[MapRequest] = maprequest,
-	[PropertyNotify] = propertynotify,
-	[UnmapNotify] = unmapNotify,
+#define BORDER_FOCUS "red"
+#define BORDER_UNFOCUS "blue"
+#define BAR_BG "gray10"
+#define BAR_FG "white"
+#define URGENT1_BG "red"
+#define URGENT1_FG "white"
+#define URGENT2_BG "yellow"
+#define URGENT2_FG "black"
+#define BOOKEND_LENGTH 3
+#define FONT_FACE "fixed"
+#define MOD_MASK1 XCB_MOD_MASK_4
+#define MOD_MASK2 (XCB_MOD_MASK_1 | XCB_MOD_MASK_4)
+#define OVERLAP_FUDGE 10
+#define PERSIST_FILE "/tmp/hwm.txt"
+#define SNAP_MARGIN 6
+#define TEXT_PADDING 4
+#define TIMEOUT_NORMAL 3000
+#define TIMEOUT_BLINK 200
+#define WORKSPACE_NUM 6
+
+static char const *c_workspace_label[WORKSPACE_NUM] = {
+	"1", "2", "3", "4", "5", "6"
 };
-static Atom wmatom[WM_LAST], netatom[NET_LAST];
-static Bool otherwm;
-static Bool running = True;
-static Bool tempFocus = False;
-static struct Client *sel;
-static Cursor cursor[CUR_LAST];
-static Display *dpy;
-static struct DC dc;
-static Window root, barwin;
-static struct Client *stack[WORKSPACE_NUM];
+static char const *c_uxterm[] = {"uxterm", NULL};
+static char const *c_dmenu[] = { "dmenu_run", "-i", "-fn", FONT_FACE, "-nb",
+	BAR_BG, "-nf", BAR_FG, "-sb", BAR_FG, "-sf", BAR_BG, NULL};
+static struct KeyBind c_key_bind[] = {
+	{24, MOD_MASK2, action_quit, {0, NULL}},
+	{38, MOD_MASK2, action_restart, {0, NULL}},
+	{25, MOD_MASK1, action_workspace_select, {0, NULL}},
+	{26, MOD_MASK1, action_workspace_select, {1, NULL}},
+	{27, MOD_MASK1, action_workspace_select, {2, NULL}},
+	{39, MOD_MASK1, action_workspace_select, {3, NULL}},
+	{40, MOD_MASK1, action_workspace_select, {4, NULL}},
+	{41, MOD_MASK1, action_workspace_select, {5, NULL}},
+	{25, MOD_MASK2, action_client_relocate, {0, NULL}},
+	{26, MOD_MASK2, action_client_relocate, {1, NULL}},
+	{27, MOD_MASK2, action_client_relocate, {2, NULL}},
+	{39, MOD_MASK2, action_client_relocate, {3, NULL}},
+	{40, MOD_MASK2, action_client_relocate, {4, NULL}},
+	{41, MOD_MASK2, action_client_relocate, {5, NULL}},
+	{111, MOD_MASK1, action_client_jump, {JUMP_NORTH, NULL}},
+	{113, MOD_MASK1, action_client_jump, {JUMP_WEST, NULL}},
+	{114, MOD_MASK1, action_client_jump, {JUMP_EAST, NULL}},
+	{116, MOD_MASK1, action_client_jump, {JUMP_SOUTH, NULL}},
+	{65, MOD_MASK1, action_client_maximize, {MAX_BOTH, NULL}},
+	{65, MOD_MASK2, action_client_maximize, {MAX_VERT, NULL}},
+	{23, MOD_MASK1, action_client_browse, {0, NULL}},
+	{58, MOD_MASK1, action_furnish, {0, NULL}},
+	{38, MOD_MASK1, action_exec, {0, c_uxterm}},
+	{28, MOD_MASK1, action_exec, {0, c_dmenu}}
+};
+static struct ButtonBind c_button_bind[] = {
+	{CLICK_WORKSPACE, 1, 0, action_workspace_select},
+	{CLICK_CLIENT, 1, MOD_MASK1, action_client_move},
+	{CLICK_CLIENT, 3, MOD_MASK1, action_client_resize}
+};
+
+/* } */
+
+static struct String g_workspace_label[WORKSPACE_NUM];
+static uint32_t g_values[3];
+static void (*g_event_handler[EVENT_MAX])(xcb_generic_event_t const *);
+static xcb_connection_t *g_conn;
+static xcb_screen_t *g_screen;
+static int g_width, g_height;
+static iconv_t g_iconv;
+static xcb_drawable_t g_root;
+static struct String g_root_name;
+static int g_root_is_urgent;
+static xcb_gc_t g_gc;
+static xcb_pixmap_t g_pixmap;
+static xcb_font_t g_font;
+static int g_font_ascent, g_font_height;
+static xcb_atom_t g_NET_WM_NAME, g_NET_WM_STATE_DEMANDS_ATTENTION;
+static xcb_cursor_t g_cursor_normal, g_cursor_move, g_cursor_resize;
+static xcb_window_t g_bar;
+static int g_bar_redraw;
+static uint32_t g_color_border_focus, g_color_border_unfocus;
+static uint32_t g_color_bar_bg, g_color_bar_fg;
+static uint32_t g_color_urgent1_bg, g_color_urgent1_fg;
+static uint32_t g_color_urgent2_bg, g_color_urgent2_fg;
+static struct ClientList g_client_list[WORKSPACE_NUM];
+static int g_workspace_cur;
+static struct Client *g_focus;
+static enum RunControl g_run;
+static int g_has_urgent, g_timeout, g_blink;
+static double g_time_prev;
+static xcb_window_t g_button_press_window;
+static int g_button_press_x, g_button_press_y;
 
 void
-arrange(void)
+action_client_browse(struct Arg const *a_arg)
 {
-	struct Client *c;
-	int i;
+	struct Client *client;
+	int do_browse;
 
-	for (i = 0; WORKSPACE_NUM > i; ++i)
-		for (c = stack[i]; NULL != c; c = c->next)
-			if (workspaceCur == i) {
-				XMoveWindow(dpy, c->win, c->x, c->y);
-				resize(c, c->x, c->y, c->w, c->h, True);
-			} else
-				XMoveWindow(dpy, c->win, c->x + 2 * sw, c->y);
-}
-
-void
-attach(struct Client *c)
-{
-	c->prev = NULL;
-	c->next = stack[c->workspace];
-	if (NULL != stack[c->workspace])
-		stack[c->workspace]->prev = c;
-	stack[c->workspace] = c;
-}
-
-void
-buttonPress(XEvent *e)
-{
-	union Arg arg = {0};
-	XButtonPressedEvent *ev = &e->xbutton;
-	struct Client *c;
-	int click = CLK_ROOT, i, x;
-
-	fprintf(stderr, "HWM:ButtonPress: %08x", ev->button);
-	if (ev->window == barwin) {
-		i = x = 0;
-		do
-			x += TEXTW(workspace_label[i]);
-		while (ev->x > x && WORKSPACE_NUM > ++i);
-		if (WORKSPACE_NUM > i) {
-			click = CLK_WORKSPACE;
-			arg.i = i;
-		} else if (ev->x > wx + ww - TEXTW(stext)) {
-			click = CLK_STATUS;
-			grabkeys();
-        	} else
-			click = CLK_TITLE;
-	} else if (NULL != (c = clientGet(ev->window))) {
-		focus(c);
-		click = CLK_CLIENT;
-	}
-	fprintf(stderr, ", %d %d", click, ev->state);
-	for (i = 0; LENGTH(buttons) > i; ++i)
-		if (buttons[i].click == click
-		    && CLEANMASK(buttons[i].mask) == CLEANMASK(ev->state)
-		    && buttons[i].button == ev->button)
-			buttons[i].func(CLK_WORKSPACE == click && 0 ==
-			    buttons[i].arg.i ? &arg : &buttons[i].arg);
-	fprintf(stderr, "HWM:\n");
-}
-
-void
-wmCheckOther(void)
-{
-	otherwm = False;
-	xerrorxlib = XSetErrorHandler(xerrorcheck);
-	XSelectInput(dpy, DefaultRootWindow(dpy), SubstructureRedirectMask);
-	XSync(dpy, False);
-	if (otherwm)
-		die("hwm: Another window manager already running.\n");
-	XSetErrorHandler(xerror);
-	XSync(dpy, False);
-}
-
-void
-cleanup(void)
-{
-	int i;
-
-	for (i = 0; WORKSPACE_NUM > i; ++i)
-		while (stack[i] != NULL)
-			unmanage(stack[i]);
-	if (dc.font.set)
-		XFreeFontSet(dpy, dc.font.set);
-	else
-		XFreeFont(dpy, dc.font.xfont);
-	XUngrabKey(dpy, AnyKey, AnyModifier, root);
-	XFreePixmap(dpy, dc.drawable);
-	XFreeGC(dpy, dc.gc);
-	XFreeCursor(dpy, cursor[CUR_NORMAL]);
-	XFreeCursor(dpy, cursor[CUR_RESIZE]);
-	XFreeCursor(dpy, cursor[CUR_MOVE]);
-	XDestroyWindow(dpy, barwin);
-	XSync(dpy, False);
-	XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
-}
-
-void
-clearUrgent(struct Client *c)
-{
-	XWMHints *wmh;
-
-	c->isurgent = False;
-	if (NULL == (wmh = XGetWMHints(dpy, c->win)))
+	(void)a_arg;
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if (TAILQ_EMPTY(&g_client_list[g_workspace_cur]) || !(client =
+	    TAILQ_NEXT(TAILQ_FIRST(&g_client_list[g_workspace_cur]), next))) {
 		return;
-	wmh->flags &= ~XUrgencyHint;
-	XSetWMHints(dpy, c->win, wmh);
-	XFree(wmh);
+	}
+	client_focus(client, 0, 1);
+	bar_draw();
+	xcb_grab_keyboard(g_conn, 0, g_root, XCB_CURRENT_TIME,
+	    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+	xcb_flush(g_conn);
+	for (do_browse = 1; do_browse;) {
+		xcb_generic_event_t *event;
+		xcb_key_press_event_t const *kp;
+
+		event = xcb_poll_for_event(g_conn);
+		if (!event) {
+			continue;
+		}
+		switch (XCB_EVENT_RESPONSE_TYPE(event)) {
+			case XCB_KEY_PRESS:
+				kp = (xcb_key_press_event_t const *)event;
+				if (23 == kp->detail) {
+					client = TAILQ_NEXT(client, next);
+					if (!client) {
+						client = TAILQ_FIRST(
+						    &g_client_list[
+						    g_workspace_cur]);
+					}
+					client_focus(client, 0, 1);
+					bar_draw();
+					xcb_flush(g_conn);
+				}
+				break;
+			case XCB_KEY_RELEASE:
+				kp = (xcb_key_press_event_t const *)event;
+				if (133 == kp->detail || 134 == kp->detail) {
+					do_browse = 0;
+				}
+				break;
+			case XCB_EXPOSE:
+			case XCB_MAP_REQUEST:
+			case XCB_CONFIGURE_REQUEST:
+				event_handle(event);
+				break;
+		}
+		free(event);
+	}
+	xcb_ungrab_keyboard(g_conn, XCB_CURRENT_TIME);
+	client_focus(client, 1, 0);
+}
+
+void
+action_client_jump(struct Arg const *a_arg)
+{
+	struct Client *client;
+	int new, test;
+
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if (!g_focus) {
+		return;
+	}
+	switch (a_arg->i) {
+		case JUMP_EAST:
+			new = g_width - WIDTH(g_focus);
+			break;
+		case JUMP_NORTH:
+			new = g_font_height;
+			break;
+		case JUMP_WEST:
+			new = 0;
+			break;
+		case JUMP_SOUTH:
+			new = g_height - HEIGHT(g_focus);
+			break;
+	}
+	TAILQ_FOREACH(client, &g_client_list[g_workspace_cur], next) {
+		if (g_focus == client) {
+			continue;
+		}
+		switch (a_arg->i) {
+			case JUMP_EAST:
+				test = client->x - WIDTH(g_focus);
+				CONVERGE(<, g_focus->x, test, new);
+				break;
+			case JUMP_NORTH:
+				test = client->y + HEIGHT(client);
+				CONVERGE(>, g_focus->y, test, new);
+				break;
+			case JUMP_WEST:
+				test = client->x + WIDTH(client);
+				CONVERGE(>, g_focus->x, test, new);
+				break;
+			case JUMP_SOUTH:
+				test = client->y - HEIGHT(g_focus);
+				CONVERGE(<, g_focus->y, test, new);
+				break;
+		}
+	}
+	if (JUMP_EAST == a_arg->i || JUMP_WEST == a_arg->i) {
+		g_focus->x = new;
+	} else {
+		g_focus->y = new;
+	}
+	client_move(g_focus, VISIBLE);
+}
+
+void
+action_client_maximize(struct Arg const *a_arg)
+{
+	enum Maximize const c_toggle = a_arg->i;
+	enum Maximize result;
+
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if (!g_focus) {
+		return;
+	}
+	switch (g_focus->maximize) {
+		case MAX_NOPE:
+			g_focus->max_old_x = g_focus->x;
+			g_focus->max_old_y = g_focus->y;
+			g_focus->max_old_width = g_focus->width;
+			g_focus->max_old_height = g_focus->height;
+			result = c_toggle;
+			break;
+		case MAX_BOTH:
+			result = MAX_BOTH == c_toggle ? MAX_NOPE : MAX_VERT;
+			break;
+		case MAX_VERT:
+			result = MAX_VERT == c_toggle ? MAX_NOPE : MAX_BOTH;
+			break;
+	}
+	switch (result) {
+		case MAX_NOPE:
+			g_focus->x = g_focus->max_old_x;
+			g_focus->y = g_focus->max_old_y;
+			g_focus->width = g_focus->max_old_width;
+			g_focus->height = g_focus->max_old_height;
+			break;
+		case MAX_BOTH:
+			g_focus->x = 0;
+			g_focus->y = g_font_height;
+			g_focus->width = g_width - 2;
+			g_focus->height = g_height - 2 - g_font_height;
+			break;
+		case MAX_VERT:
+			g_focus->x = g_focus->max_old_x;
+			g_focus->y = g_font_height;
+			g_focus->width = g_focus->max_old_width;
+			g_focus->height = g_height - 2 - g_font_height;
+			break;
+	}
+	g_focus->maximize = result;
+	client_move(g_focus, VISIBLE);
+	client_resize(g_focus, 0);
+}
+
+void
+action_client_move(struct Arg const *a_arg)
+{
+	xcb_generic_event_t *event;
+	int dx, dy, do_move;
+
+	(void)a_arg;
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if (!g_focus) {
+		return;
+	}
+	dx = g_focus->x - g_button_press_x;
+	dy = g_focus->y - g_button_press_y;
+	xcb_grab_pointer(g_conn, 0, g_focus->window,
+	    XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION,
+	    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, XCB_NONE, g_cursor_move,
+	    XCB_CURRENT_TIME);
+	xcb_flush(g_conn);
+	for (do_move = 1; do_move;) {
+		xcb_motion_notify_event_t *motion;
+
+		event = xcb_poll_for_event(g_conn);
+		if (!event) {
+			continue;
+		}
+		switch (XCB_EVENT_RESPONSE_TYPE(event)) {
+			case XCB_BUTTON_RELEASE:
+				do_move = 0;
+				break;
+			case XCB_MOTION_NOTIFY:
+				motion = (xcb_motion_notify_event_t *)event;
+				g_focus->x = motion->root_x + dx;
+				g_focus->y = motion->root_y + dy;
+				client_snap_position(g_focus);
+				client_move(g_focus, VISIBLE);
+				xcb_flush(g_conn);
+				break;
+			case XCB_EXPOSE:
+			case XCB_MAP_REQUEST:
+			case XCB_CONFIGURE_REQUEST:
+				event_handle(event);
+				break;
+		}
+		free(event);
+	}
+	xcb_ungrab_pointer(g_conn, XCB_CURRENT_TIME);
+	xcb_set_input_focus(g_conn, XCB_INPUT_FOCUS_POINTER_ROOT,
+	    g_focus->window, XCB_CURRENT_TIME);
+}
+
+void
+action_client_relocate(struct Arg const *a_arg)
+{
+	assert(0 <= a_arg->i && WORKSPACE_NUM > a_arg->i);
+printf("%s(%d)\n", __FUNCTION__, a_arg->i); fflush(stdout);
+	if (!g_focus || g_workspace_cur == a_arg->i) {
+		return;
+	}
+	TAILQ_REMOVE(&g_client_list[g_workspace_cur], g_focus, next);
+	TAILQ_INSERT_HEAD(&g_client_list[a_arg->i], g_focus, next);
+	client_move(g_focus, HIDDEN);
+	client_focus(g_focus = NULL, 1, 0);
+}
+
+void
+action_client_resize(struct Arg const *a_arg)
+{
+	xcb_generic_event_t *event;
+	int dx, dy, do_resize;
+
+	(void)a_arg;
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if (!g_focus) {
+		return;
+	}
+	dx = g_focus->width - g_button_press_x;
+	dy = g_focus->height - g_button_press_y;
+	xcb_grab_pointer(g_conn, 0, g_focus->window,
+	    XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION,
+	    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, XCB_NONE,
+	    g_cursor_resize, XCB_CURRENT_TIME);
+	xcb_flush(g_conn);
+	for (do_resize = 1; do_resize;) {
+		xcb_motion_notify_event_t *motion;
+
+		event = xcb_poll_for_event(g_conn);
+		if (!event) {
+			continue;
+		}
+		switch (XCB_EVENT_RESPONSE_TYPE(event)) {
+			case XCB_BUTTON_RELEASE:
+				do_resize = 0;
+				break;
+			case XCB_MOTION_NOTIFY:
+				motion = (xcb_motion_notify_event_t *)event;
+				g_focus->width = motion->root_x + dx;
+				g_focus->height = motion->root_y + dy;
+				client_snap_dimension(g_focus);
+				client_resize(g_focus, 1);
+				xcb_flush(g_conn);
+				break;
+			case XCB_EXPOSE:
+			case XCB_MAP_REQUEST:
+			case XCB_CONFIGURE_REQUEST:
+				event_handle(event);
+				break;
+		}
+		free(event);
+	}
+	xcb_ungrab_pointer(g_conn, XCB_CURRENT_TIME);
+	xcb_set_input_focus(g_conn, XCB_INPUT_FOCUS_PARENT, g_focus->window,
+	    XCB_CURRENT_TIME);
+}
+
+/*void
+action_dump(struct Arg const *a_arg)
+{
+	struct Client *client;
+	size_t i;
+
+	(void)a_arg;
+	for (i = 0; WORKSPACE_NUM > i; ++i) {
+		TAILQ_FOREACH(client, &g_client_list[i], next) {
+			printf("DUMP %d w0x%08x u%d %d+%d,%dx%d\n", (int)i,
+			    client->window, client->is_urgent, client->x,
+			    client->y, client->width, client->height);
+		}
+	}
+}*/
+
+void
+action_exec(struct Arg const *a_arg)
+{
+	pid_t pid;
+
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	pid = fork();
+	if (0 > pid) {
+		fprintf(stderr, "Could not fork for '%s'.\n", ((char const
+		    **)a_arg->v)[0]);
+	} else if (0 == pid) {
+		execvp(((char const **)a_arg->v)[0], a_arg->v);
+		_exit(0);
+	}
+}
+
+void
+action_furnish(struct Arg const *a_arg)
+{
+	struct Client *client;
+	int num = 0;
+
+	(void)a_arg;
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	TAILQ_FOREACH(client, &g_client_list[g_workspace_cur], next) {
+		client->x += 10000;
+		++num;
+	}
+	while (0 < num--) {
+		struct Client *best_client = NULL;
+		int best_size = 0, best_ofs = 0;
+
+		TAILQ_FOREACH(client, &g_client_list[g_workspace_cur], next) {
+			int size = client->width * client->height;
+			int ofs = client->x + 10000 * client->y;
+
+			if (10000 > client->x) {
+				continue;
+			}
+			if (best_size < size ||
+			    (size == best_size && ofs < best_ofs)) {
+				best_client = client;
+				best_size = size;
+				best_ofs = ofs;
+			}
+		}
+		client_place(best_client);
+	}
+}
+
+void
+action_quit(struct Arg const *a_arg)
+{
+	(void)a_arg;
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	g_run = RUN_QUIT;
+}
+
+void
+action_restart(struct Arg const *a_arg)
+{
+	(void)a_arg;
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	g_run = RUN_RESTART;
+}
+
+void
+action_workspace_select(struct Arg const *a_arg)
+{
+	struct Client *client;
+
+printf("%s(%d->%d)\n", __FUNCTION__, g_workspace_cur, a_arg->i); fflush(stdout);
+	assert(0 <= a_arg->i && WORKSPACE_NUM > a_arg->i);
+	if (g_workspace_cur == a_arg->i) {
+		return;
+	}
+	TAILQ_FOREACH(client, &g_client_list[g_workspace_cur], next) {
+		client_move(client, HIDDEN);
+	}
+	g_workspace_cur = a_arg->i;
+	TAILQ_FOREACH(client, &g_client_list[g_workspace_cur], next) {
+		client_move(client, VISIBLE);
+	}
+	client_focus(g_focus = NULL, 1, 0);
+}
+
+xcb_atom_t
+atom_get(char const *a_name)
+{
+	xcb_intern_atom_reply_t *reply;
+	xcb_atom_t atom;
+
+	reply = xcb_intern_atom_reply(g_conn, xcb_intern_atom(g_conn, 1,
+	    strlen(a_name), a_name), NULL);
+	if (!reply) {
+		die("Could not get atom '%s'.", a_name);
+	}
+	atom = reply->atom;
+	free(reply);
+	return atom;
+}
+
+void
+bar_draw(void)
+{
+	xcb_rectangle_t rect;
+	struct Client *client;
+	int i, x;
+
+	rect.x = 0;
+	rect.y = 0;
+	rect.width = g_width;
+	rect.height = g_font_height;
+	xcb_change_gc(g_conn, g_gc, XCB_GC_FOREGROUND, &g_color_bar_bg);
+	xcb_poly_fill_rectangle(g_conn, g_pixmap, g_gc, 1, &rect);
+
+	g_has_urgent = 0;
+	for (x = i = 0; WORKSPACE_NUM > i; ++i) {
+		int is_urgent = 0;
+
+		TAILQ_FOREACH(client, &g_client_list[i], next) {
+			is_urgent |= client->is_urgent;
+		}
+		g_has_urgent |= is_urgent;
+		x += text_draw(&g_workspace_label[i], g_workspace_cur == i,
+		    is_urgent, x, 0);
+		if (!TAILQ_EMPTY(&g_client_list[i])) {
+			rect.x = x - 4;
+			rect.y = 0;
+			rect.width = 3;
+			rect.height = 3;
+			xcb_poly_rectangle(g_conn, g_pixmap, g_gc, 1, &rect);
+		}
+	}
+	text_draw(&g_root_name, 0, g_root_is_urgent, g_width -
+	    text_width(&g_root_name), 0);
+	g_has_urgent |= g_root_is_urgent;
+	TAILQ_FOREACH(client, &g_client_list[g_workspace_cur], next) {
+		x += text_draw(&client->name, g_focus == client,
+		    client->is_urgent, x, 0);
+	}
+
+	xcb_copy_area(g_conn, g_pixmap, g_bar, g_gc, 0, 0, 0, 0, g_width,
+	    g_font_height);
+}
+
+void
+button_grab(struct Client *a_client)
+{
+	struct ButtonBind *bind;
+	size_t i;
+
+	for (i = 0, bind = c_button_bind; LENGTH(c_button_bind) > i; ++i,
+	    ++bind) {
+		if (CLICK_CLIENT == bind->click) {
+			xcb_grab_button(g_conn, 0, a_client->window,
+			    XCB_EVENT_MASK_BUTTON_PRESS, XCB_GRAB_MODE_ASYNC,
+			    XCB_GRAB_MODE_ASYNC, XCB_NONE, XCB_NONE,
+			    bind->code, bind->state);
+		}
+	}
 }
 
 struct Client *
-clientGet(Window w)
+client_add(xcb_window_t a_window)
 {
-	int i;
-	struct Client *c;
+	int arr[9] = {-1};
+
+	return client_add_details(a_window, arr);
+}
+
+struct Client *
+client_add_details(xcb_window_t a_window, int const *a_data)
+{
+	xcb_get_window_attributes_reply_t *attr;
+	xcb_get_geometry_reply_t *geom;
+	struct Client *client;
+	int workspace;
+
+	if ((attr = xcb_get_window_attributes_reply(g_conn,
+	    xcb_get_window_attributes(g_conn, a_window), NULL))) {
+		if (attr->override_redirect) {
+			free(attr);
+			return NULL;
+		}
+		free(attr);
+	}
+
+	geom = xcb_get_geometry_reply(g_conn, xcb_get_geometry(g_conn,
+	    a_window), NULL);
+	if (!geom) {
+		fprintf(stderr, "client_add: Could not get geometry of window"
+		    " 0x%08x.\n", a_window);
+		return NULL;
+	}
+
+	client = malloc(sizeof(struct Client));
+	client->window = a_window;
+	client->hints.flags = 0;
+	xcb_icccm_get_wm_normal_hints_reply(g_conn,
+	    xcb_icccm_get_wm_normal_hints(g_conn, a_window), &client->hints,
+	    NULL);
+	client_name_update(client);
+	client->width = geom->width;
+	client->height = geom->height;
+	free(geom);
+	if (0 > a_data[0]) {
+		workspace = g_workspace_cur;
+		client->is_urgent = 0;
+		client->y = client->x = 0;
+		client->maximize = MAX_NOPE;
+		client->max_old_y = client->max_old_x = 0;
+		client->max_old_height = client->max_old_width = 0;
+	} else {
+		workspace = a_data[0];
+		client->is_urgent = a_data[1];
+		client->x = a_data[2];
+		client->y = a_data[3];
+		client->maximize = a_data[4];
+		client->max_old_x = a_data[5];
+		client->max_old_y = a_data[6];
+		client->max_old_width = a_data[7];
+		client->max_old_height = a_data[8];
+	}
+	TAILQ_INSERT_HEAD(&g_client_list[workspace], client, next);
+
+	button_grab(client);
+
+	g_values[0] = g_color_border_unfocus;
+	g_values[1] = XCB_EVENT_MASK_ENTER_WINDOW |
+	    XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_PROPERTY_CHANGE;
+	HWM_XCB_CHECKED("Could not set client event mask.",
+	    xcb_change_window_attributes_checked, (g_conn, a_window,
+	    XCB_CW_BORDER_PIXEL | XCB_CW_EVENT_MASK, g_values));
+	g_values[0] = 1;
+	xcb_configure_window(g_conn, a_window, XCB_CONFIG_WINDOW_BORDER_WIDTH,
+	    g_values);
+
+	if (g_workspace_cur != workspace) {
+		client_move(client, HIDDEN);
+	}
+	return client;
+}
+
+void
+client_delete(struct Client *a_client)
+{
+	if (a_client) {
+		TAILQ_REMOVE(&g_client_list[g_workspace_cur], a_client, next);
+		free(a_client);
+		if (g_focus == a_client) {
+			client_focus(g_focus = NULL, 1, 0);
+		}
+	}
+}
+
+void
+client_focus(struct Client *a_client, int a_do_reorder, int a_do_raise)
+{
+	if (g_focus) {
+		g_values[0] = g_color_border_unfocus;
+		xcb_change_window_attributes(g_conn, g_focus->window,
+		    XCB_CW_BORDER_PIXEL, g_values);
+	}
+	g_focus = a_client ? a_client :
+	    TAILQ_FIRST(&g_client_list[g_workspace_cur]);
+	if (g_focus) {
+		xcb_icccm_wm_hints_t hints;
+
+		if (xcb_icccm_get_wm_hints_reply(g_conn,
+		    xcb_icccm_get_wm_hints(g_conn, g_focus->window),
+		    &hints, NULL)) {
+			hints.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
+			xcb_icccm_set_wm_hints(g_conn, g_focus->window,
+			    &hints);
+		}
+		g_focus->is_urgent = 0;
+		if (a_do_reorder) {
+			TAILQ_REMOVE(&g_client_list[g_workspace_cur], g_focus,
+			    next);
+			TAILQ_INSERT_HEAD(&g_client_list[g_workspace_cur],
+			    g_focus, next);
+		}
+		if (a_do_raise) {
+			g_values[0] = XCB_STACK_MODE_TOP_IF;
+			xcb_configure_window(g_conn, g_focus->window,
+			    XCB_CONFIG_WINDOW_STACK_MODE, g_values);
+		}
+		g_values[0] = g_color_border_focus;
+		xcb_change_window_attributes(g_conn, g_focus->window,
+		    XCB_CW_BORDER_PIXEL, g_values);
+		xcb_set_input_focus(g_conn, XCB_INPUT_FOCUS_POINTER_ROOT,
+		    g_focus->window, XCB_CURRENT_TIME);
+	}
+	g_bar_redraw = 1;
+}
+
+struct Client *
+client_get(xcb_window_t a_window, int *a_out_workspace)
+{
+	struct Client *client;
+	size_t i;
 
 	for (i = 0; WORKSPACE_NUM > i; ++i) {
-		for (c = stack[i]; NULL != c && w != c->win; c = c->next)
-			;
-		if (NULL != c)
-			break;
-	}
-	if (NULL == c)
-		fprintf(stderr, "HWM:clientGet: Window with no client.\n");
-	return c;
-}
-
-void
-configure(struct Client *c)
-{
-	XConfigureEvent ce;
-
-	ce.type = ConfigureNotify;
-	ce.display = dpy;
-	ce.event = c->win;
-	ce.window = c->win;
-	ce.x = c->x;
-	ce.y = c->y;
-	ce.width = c->w;
-	ce.height = c->h;
-	ce.border_width = c->bw;
-	ce.above = None;
-	ce.override_redirect = False;
-	XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
-}
-
-void
-configureNotify(XEvent *e)
-{
-	XConfigureEvent *ev = &e->xconfigure;
-
-	if (root == ev->window && (sw != ev->width || sh != ev->height)) {
-		sw = ev->width;
-		sh = ev->height;
-		updategeom();
-		updateBar();
-		arrange();
-	}
-}
-
-void
-configureRequest(XEvent *e)
-{
-	struct Client *c;
-	XConfigureRequestEvent *ev = &e->xconfigurerequest;
-	XWindowChanges wc;
-
-	if (NULL != (c = clientGet(ev->window))) {
-		if (0 != (CWBorderWidth & ev->value_mask))
-			c->bw = ev->border_width;
-		else {
-			if (0 != (CWX & ev->value_mask))
-				c->x = sx + ev->x;
-			if (0 != (CWY & ev->value_mask))
-				c->y = sy + ev->y;
-			if (0 != (CWWidth & ev->value_mask))
-				c->w = ev->width;
-			if (0 != (CWHeight & ev->value_mask))
-				c->h = ev->height;
-			if (c->x + WIDTH(c) <= sx)
-				c->x = sx - WIDTH(c) + 1;
-			if (c->x >= sx + sw)
-				c->x = sx + sw - 1;
-			if (c->y + HEIGHT(c) <= sy)
-				c->y = sy - HEIGHT(c) + 1;
-			if (c->y >= sy + sh)
-				c->y = sy + sh - 1;
-			if (0 != ((CWX | CWY) & ev->value_mask) && 0 ==
-			    ((CWWidth | CWHeight) & ev->value_mask))
-				configure(c);
-			if (c->workspace == workspaceCur)
-				XMoveResizeWindow(dpy, c->win, c->x, c->y,
-				    c->w, c->h);
+		TAILQ_FOREACH(client, &g_client_list[i], next) {
+			if (client->window == a_window) {
+				if (a_out_workspace) {
+					*a_out_workspace = i;
+				}
+				return client;
+			}
 		}
-	} else {
-		wc.x = ev->x;
-		wc.y = ev->y;
-		wc.width = ev->width;
-		wc.height = ev->height;
-		wc.border_width = ev->border_width;
-		wc.sibling = ev->above;
-		wc.stack_mode = ev->detail;
-		XConfigureWindow(dpy, ev->window, ev->value_mask, &wc);
 	}
-	XSync(dpy, False);
+	return NULL;
 }
 
 void
-destroyNotify(XEvent *e)
+client_move(struct Client *a_client, enum Visibility a_visibility)
 {
-	struct Client *c;
-	XDestroyWindowEvent *ev = &e->xdestroywindow;
-
-	if (NULL != (c = clientGet(ev->window)))
-		unmanage(c);
+	if (VISIBLE == a_visibility) {
+		g_values[0] = a_client->x;
+		g_values[1] = a_client->y;
+	} else {
+		g_values[0] = 10000;
+		g_values[1] = 0;
+	}
+	xcb_configure_window(g_conn, a_client->window, XCB_CONFIG_WINDOW_X |
+	    XCB_CONFIG_WINDOW_Y, g_values);
 }
 
 void
-detach(struct Client *c)
+client_name_update(struct Client *a_client)
 {
-	if (NULL != c->prev)
-		c->prev->next = c->next;
-	else
-		stack[c->workspace] = c->next;
-	if (NULL != c->next)
-		c->next->prev = c->prev;
+	xcb_icccm_get_text_property_reply_t icccm;
+	xcb_get_property_reply_t *reply;
+
+	reply = xcb_get_property_reply(g_conn, xcb_get_property(g_conn, 0,
+	    a_client->window, g_NET_WM_NAME, XCB_GET_PROPERTY_TYPE_ANY, 0,
+	    UINT32_MAX), NULL);
+	if (reply) {
+		string_convert(&a_client->name, xcb_get_property_value(reply),
+		    xcb_get_property_value_length(reply));
+		free(reply);
+		if (a_client->name.length) {
+			return;
+		}
+	}
+	if (xcb_icccm_get_wm_name_reply(g_conn, xcb_icccm_get_wm_name(g_conn,
+	    a_client->window), &icccm, NULL)) {
+		string_convert(&a_client->name, icccm.name, icccm.name_len);
+		xcb_icccm_get_text_property_reply_wipe(&icccm);
+		return;
+	}
+	string_convert(&a_client->name, "<noname>", 8);
 }
 
 void
-die(const char *fmt, ...)
+client_place(struct Client *a_client)
+{
+	int best_score = 1e9, best_touching, best_x = 0, best_y =
+	    g_font_height, x = 0, y = g_font_height;
+
+	x = g_width - WIDTH(a_client);
+	y = g_font_height - 1;
+
+	for (;;) {
+		struct Client *sibling;
+		int score = 0, touching = 0, new_x, new_y, test;
+
+		if (x + WIDTH(a_client) == g_width) {
+			if (y + HEIGHT(a_client) == g_height) {
+				break;
+			}
+			new_y = g_height - HEIGHT(a_client);
+			TAILQ_FOREACH(sibling,
+			    &g_client_list[g_workspace_cur], next) {
+				if (sibling != a_client) {
+					test = sibling->y - HEIGHT(a_client);
+					CONVERGE(<, y, test, new_y);
+					test = sibling->y + OVERLAP_FUDGE;
+					CONVERGE(<, y, test, new_y);
+					test = sibling->y + HEIGHT(sibling) -
+					    HEIGHT(a_client) - OVERLAP_FUDGE;
+					CONVERGE(<, y, test, new_y);
+					test = sibling->y + HEIGHT(sibling);
+					CONVERGE(<, y, test, new_y);
+				}
+			}
+			x = -1;
+			test = g_font_height;
+			if (y < test && test < new_y) {
+				new_y = test;
+			}
+			y = new_y;
+		}
+		new_x = g_width - WIDTH(a_client);
+		TAILQ_FOREACH(sibling, &g_client_list[g_workspace_cur], next)
+		{
+			if (sibling != a_client) {
+				test = sibling->x - WIDTH(a_client);
+				CONVERGE(<, x, test, new_x);
+				test = sibling->x + OVERLAP_FUDGE;
+				CONVERGE(<, x, test, new_x);
+				test = sibling->x + WIDTH(sibling) -
+				    WIDTH(a_client) - OVERLAP_FUDGE;
+				CONVERGE(<, x, test, new_x);
+				test = sibling->x + WIDTH(sibling);
+				CONVERGE(<, x, test, new_x);
+			}
+		}
+		test = 0;
+		if (x < test && test < new_x) {
+			new_x = test;
+		}
+		x = new_x;
+
+		TAILQ_FOREACH(sibling, &g_client_list[g_workspace_cur], next)
+		{
+			if (sibling != a_client) {
+				int x0 = MAX(x, sibling->x);
+				int y0 = MAX(y, sibling->y);
+				int x1 = MIN(x + WIDTH(a_client), sibling->x +
+				    WIDTH(sibling));
+				int y1 = MIN(y + HEIGHT(a_client), sibling->y
+				    + HEIGHT(sibling));
+				int s = MAX(0, x1 - x0) * MAX(0, y1 - y0);
+
+				if (0 < s) {
+					++touching;
+				}
+				score += s;
+			}
+		}
+		if (best_score > score) {
+			best_score = score;
+			best_touching = touching;
+			best_x = x;
+			best_y = y;
+		}
+	}
+
+	a_client->x = MIN(best_x + 0 * OVERLAP_FUDGE * best_touching, g_width
+	    - WIDTH(a_client));
+	a_client->y = MIN(best_y + 0 * OVERLAP_FUDGE * best_touching, g_height
+	    - HEIGHT(a_client));
+	client_move(a_client, VISIBLE);
+}
+
+void
+client_resize(struct Client *a_client, int a_do_round)
+{
+	xcb_size_hints_t const *hints = &a_client->hints;
+	int min_width = 0, min_height = 0;
+
+	if (XCB_ICCCM_SIZE_HINT_P_MIN_SIZE & hints->flags) {
+		min_width = hints->min_width;
+		min_height = hints->min_height;
+	}
+	if (XCB_ICCCM_SIZE_HINT_P_RESIZE_INC & hints->flags) {
+		int wi = hints->width_inc;
+		int hi = hints->height_inc;
+		int f = a_do_round ? 1 : 0;
+
+		a_client->width = ((a_client->width - min_width + f * wi / 2)
+		    / wi) * wi + min_width;
+		a_client->height = ((a_client->height - min_height + f * hi /
+		    2) / hi) * hi + min_height;
+	}
+	if (XCB_ICCCM_SIZE_HINT_P_MIN_SIZE & hints->flags) {
+printf("Min = %dx%d\n", min_width, min_height);
+		a_client->width = MAX(a_client->width, min_width);
+		a_client->height = MAX(a_client->height, min_height);
+	}
+	if (XCB_ICCCM_SIZE_HINT_P_MAX_SIZE & hints->flags) {
+printf("Max = %dx%d\n", hints->max_width, hints->max_height);
+		a_client->width = MIN(a_client->width, hints->max_width);
+		a_client->height = MIN(a_client->height, hints->max_height);
+	}
+	if (XCB_ICCCM_SIZE_HINT_P_ASPECT & hints->flags) {
+printf("Aspect = %d:%d .. %dx%d\n",
+    hints->min_aspect_num, hints->min_aspect_den,
+    hints->max_aspect_num, hints->max_aspect_den);
+	}
+	g_values[0] = a_client->width;
+	g_values[1] = a_client->height;
+	xcb_configure_window(g_conn, a_client->window, XCB_CONFIG_WINDOW_WIDTH
+	    | XCB_CONFIG_WINDOW_HEIGHT, g_values);
+}
+
+void
+client_snap_dimension(struct Client *a_client)
+{
+	struct Client *sibling;
+	int ref;
+
+	TAILQ_FOREACH(sibling, &g_client_list[g_workspace_cur], next) {
+		if (a_client == sibling) {
+			continue;
+		}
+		ref = sibling->x - a_client->x - 2;
+		SNAP(<, ref, a_client->width, ref + SNAP_MARGIN);
+		ref = sibling->y - a_client->y - 2;
+		SNAP(<, ref, a_client->height, ref + SNAP_MARGIN);
+	}
+	ref = g_width - a_client->x - 2;
+	SNAP(<, ref, a_client->width, ref + SNAP_MARGIN);
+	ref = g_height - a_client->y - 2;
+	SNAP(<, ref, a_client->height, ref + SNAP_MARGIN);
+}
+
+void
+client_snap_position(struct Client *a_client)
+{
+	struct Client *sibling;
+	int ref;
+
+	TAILQ_FOREACH(sibling, &g_client_list[g_workspace_cur], next) {
+		if (a_client == sibling) {
+			continue;
+		}
+		ref = sibling->x - WIDTH(a_client);
+		SNAP(<, ref, a_client->x, ref + SNAP_MARGIN);
+		ref = sibling->x + WIDTH(sibling);
+		SNAP(>, ref, a_client->x, ref - SNAP_MARGIN);
+		ref = sibling->y - HEIGHT(a_client);
+		SNAP(<, ref, a_client->y, ref + SNAP_MARGIN);
+		ref = sibling->y + HEIGHT(sibling);
+		SNAP(>, ref, a_client->y, ref - SNAP_MARGIN);
+	}
+	ref = g_width - WIDTH(a_client);
+	SNAP(<, ref, a_client->x, ref + SNAP_MARGIN);
+	ref = 0;
+	SNAP(>, ref, a_client->x, ref - SNAP_MARGIN);
+
+	ref = g_height - HEIGHT(a_client);
+	SNAP(<, ref, a_client->y, ref + SNAP_MARGIN);
+	ref = g_font_height;
+	SNAP(>, ref, a_client->y, ref - SNAP_MARGIN);
+}
+
+uint32_t
+color_get(char const *a_name)
+{
+	xcb_alloc_named_color_reply_t *color;
+	uint32_t pixel;
+
+	color = xcb_alloc_named_color_reply(g_conn,
+	    xcb_alloc_named_color(g_conn, g_screen->default_colormap,
+	    strlen(a_name), a_name), NULL);
+	pixel = color->pixel;
+	free(color);
+	return pixel;
+}
+
+xcb_cursor_t
+cursor_get(xcb_font_t a_font, int a_index)
+{
+	xcb_cursor_t cursor;
+
+	cursor = xcb_generate_id(g_conn);
+	xcb_create_glyph_cursor(g_conn, cursor, a_font, a_font, a_index,
+	    a_index + 1, 0, 0, 0, 0xffff, 0xffff, 0xffff);
+	return cursor;
+}
+
+void
+die(char const *a_fmt, ...)
 {
 	va_list args;
 
-	va_start(args, fmt);
-	vfprintf(stderr, fmt, args);
+	va_start(args, a_fmt);
+	fprintf(stderr, a_fmt, args);
 	va_end(args);
+	if (g_conn) {
+		xcb_disconnect(g_conn);
+	}
 	exit(EXIT_FAILURE);
 }
 
 void
-drawBar(void)
+event_button_press(xcb_generic_event_t const *a_event)
 {
-	struct Client *c;
-	long *col;
-	int list_x, stat_x;
-	int i, occ = 0, urg = 0;
+	struct Arg arg;
+	xcb_button_press_event_t const *ev = (xcb_button_press_event_t const
+	    *)a_event;
+	struct ButtonBind *bind;
+	struct Client *client;
+	enum Click click = CLICK_ROOT;
+	size_t i;
 
-	XSetForeground(dpy, dc.gc, dc.norm[COL_BG]);
-	XFillRectangle(dpy, dc.drawable, dc.gc, 0, 0, sw, dc.h);
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if (ev->event == g_bar) {
+		int x = 0;
 
-	for (i = 0; i < WORKSPACE_NUM; ++i) {
-		if (stack[i] != NULL)
-			occ |= 1 << i;
-		for (c = stack[i]; c != NULL; c = c->next)
-			if (c->isurgent)
-				urg |= 1 << i;
-	}
-
-	dc.x = 0;
-	for (i = 0; i < WORKSPACE_NUM; ++i) {
-		dc.w = TEXTW(workspace_label[i]);
-		col = i == workspaceCur ? dc.sel : dc.norm;
-		drawText(workspace_label[i], col, urg & 1 << i);
-		drawSquare(sel != NULL && i == sel->workspace, occ & 1 << i, urg & 1 << i, col);
-		dc.x += dc.w;
-	}
-#ifdef XKB
-	{
-		char *s;
-
-		s = xkb_grpName[sel != NULL ? sel->xkbGroupIdx : 0];
-		dc.w = TEXTW(s);
-		drawText(s, dc.norm, False);
-		dc.x += dc.w;
-	}
-#endif
-	list_x = dc.x;
-
-	dc.w = TEXTW(stext);
-	if (list_x < ww - dc.w)
-		dc.x = ww - dc.w;
-	else {
-		dc.x = list_x;
-		dc.w = ww - list_x;
-	}
-	stat_x = dc.x;
-	drawText(stext, swarn > 0 ? dc.warn[swarn - 1] : dc.norm, False);
-	for (c = stack[workspaceCur], dc.x = list_x; c != NULL && dc.x < stat_x; c = c->next, dc.x += dc.w) {
-		dc.w = TEXTW(c->name);
-		if (dc.x + dc.w > stat_x)
-			dc.w = stat_x - dc.x;
-		drawText(c->name, c == sel ? dc.sel : dc.norm, False);
-	}
-	XCopyArea(dpy, dc.drawable, barwin, dc.gc, 0, 0, ww, dc.h, 0, 0);
-	XSync(dpy, False);
-}
-
-void
-drawSquare(Bool filled, Bool empty, Bool invert, long col[COL_LAST])
-{
-	int x;
-	XGCValues gcv;
-	XRectangle r = { dc.x, dc.y, dc.w, dc.h };
-
-	gcv.foreground = col[invert ? COL_BG : COL_FG];
-	XChangeGC(dpy, dc.gc, GCForeground, &gcv);
-	x = (dc.font.ascent + dc.font.descent + 2) / 4;
-	r.x = dc.x + 1;
-	r.y = dc.y + 1;
-	if (filled) {
-		r.width = r.height = x + 1;
-		XFillRectangles(dpy, dc.drawable, dc.gc, &r, 1);
-	} else if (empty) {
-		r.width = r.height = x;
-		XDrawRectangles(dpy, dc.drawable, dc.gc, &r, 1);
-	}
-}
-
-void
-drawText(const char *text, long col[COL_LAST], Bool invert)
-{
-	char buf[256];
-	int i, x, y, h, len, olen;
-
-	XSetForeground(dpy, dc.gc, col[invert ? COL_FG : COL_BG]);
-	XFillRectangle(dpy, dc.drawable, dc.gc, dc.x, dc.y, dc.w, dc.h);
-	if (text == NULL)
-		return;
-	olen = strlen(text);
-	h = dc.font.ascent + dc.font.descent;
-	y = dc.y + (dc.h / 2) - (h / 2) + dc.font.ascent;
-	x = dc.x + (h / 2);
-	for (len = MIN(olen, (int)sizeof buf); len && textnw(text, len) > dc.w - h; len--)
-		;
-	if (!len)
-		return;
-	memcpy(buf, text, len);
-	if (len < olen)
-		for (i = len; i && i > len - 3; buf[--i] = '.')
-			;
-	XSetForeground(dpy, dc.gc, col[invert ? COL_BG : COL_FG]);
-	if (dc.font.set)
-		XmbDrawString(dpy, dc.drawable, dc.font.set, dc.gc, x, y, buf, len);
-	else
-		XDrawString(dpy, dc.drawable, dc.gc, x, y, buf, len);
-}
-
-void
-enterNotify(XEvent *e)
-{
-	XCrossingEvent *ev = &e->xcrossing;
-
-	if ((ev->mode != NotifyNormal || ev->detail == NotifyInferior) &&
-	  ev->window != root)
-		return;
-	focus(clientGet(ev->window));
-}
-
-void
-expose(XEvent *e)
-{
-	XExposeEvent *ev = &e->xexpose;
-
-	if (ev->count == 0 && (ev->window == barwin))
-		drawBar();
-}
-
-void
-focus(struct Client *c)
-{
-	if (NULL == c || c->workspace != workspaceCur)
-		c = stack[workspaceCur];
-	if (NULL != sel && sel != c) {
-		grabbuttons(sel, False);
-		XSetWindowBorder(dpy, sel->win, dc.norm[COL_BORDER]);
-	}
-	if (NULL != c) {
-		if (c->isurgent)
-			clearUrgent(c);
-		if (!tempFocus) {
-			detach(c);
-			attach(c);
+		i = 0;
+		do {
+			x += text_width(&g_workspace_label[i]);
+		} while (x <= ev->root_x && WORKSPACE_NUM > ++i);
+		if (WORKSPACE_NUM > i) {
+			click = CLICK_WORKSPACE;
+			arg.i = i;
+		} else if (g_width - text_width(&g_root_name) <= ev->root_x) {
+			click = CLICK_STATUS;
 		}
-		grabbuttons(c, True);
-		XSetWindowBorder(dpy, c->win, dc.sel[COL_BORDER]);
-		XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
-#if defined XKB
-		XkbLockGroup(dpy, XkbUseCoreKbd, c->xkbGroupIdx);
-#endif
-	} else
-		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
-	sel = c;
-	drawBar();
-}
-
-void
-focusIn(XEvent *e)
-{
-	XFocusChangeEvent *ev = &e->xfocus;
-
-	if (NULL != sel && ev->window != sel->win)
-		XSetInputFocus(dpy, sel->win, RevertToPointerRoot,
-		    CurrentTime);
-}
-
-void
-focusSet(void)
-{
-	if (tempFocus) {
-		tempFocus = False;
-		if (NULL != sel) {
-			detach(sel);
-			attach(sel);
-		}
+	} else if ((client = client_get(ev->event, NULL))) {
+		click = CLICK_CLIENT;
+		client_focus(client, 1, 1);
 	}
-	drawBar();
-}
-
-void
-furnish(const union Arg *arg)
-{
-	struct Client *c;
-	struct Client *last = NULL;
-	int maxSize = 1 << 30;
-
-	for (c = stack[workspaceCur]; c != NULL; c = c->next) {
-		c->x = sx + sw - 1;
-		c->y = sy + sh - 1;
-	}
-
-	for (;;) {
-		struct Client *big = NULL;
-		int minSize = 0;
-
-		for (c = stack[workspaceCur]; c != NULL; c = c->next) {
-			if (c == last)
-				maxSize = last->w * last->h;
-			else if (c->w * c->h >= minSize && c->w * c->h <
-			    maxSize) {
-				big = c;
-				minSize = c->w * c->h;
-			}
-		}
-		if (big == NULL)
-			break;
-		place(big);
-		last = big;
-		maxSize = last->w * last->h + 1;
-	}
-	arrange();
-}
-
-long
-colorGet(const char *colstr)
-{
-	Colormap cmap = DefaultColormap(dpy, screen);
-	XColor color;
-
-	if (!XAllocNamedColor(dpy, cmap, colstr, &color, &color))
-		die("hwm: Could not allocate color '%s'.\n", colstr);
-	return color.pixel;
-}
-
-long
-getstate(Window w)
-{
-	int format, status;
-	long result = -1;
-	unsigned char *p = NULL;
-	unsigned long n, extra;
-	Atom real;
-
-	status = XGetWindowProperty(dpy, w, wmatom[WM_STATE], 0L, 2L, False, wmatom[WM_STATE],
-			&real, &format, &n, &extra, (unsigned char **)&p);
-	if (status != Success)
-		return -1;
-	if (n != 0)
-		result = *p;
-	XFree(p);
-	return result;
-}
-
-Bool
-gettextprop(Window w, Atom atom, char *text, int size)
-{
-	char **list = NULL;
-	int n;
-	XTextProperty name;
-
-	if (!text || size == 0)
-		return False;
-	text[0] = '\0';
-	XGetTextProperty(dpy, w, &name, atom);
-	if (!name.nitems)
-		return False;
-	if (name.encoding == XA_STRING)
-		strncpy(text, (char *)name.value, size - 1);
-	else {
-		if (XmbTextPropertyToTextList(dpy, &name, &list, &n) >= Success
-		&& n > 0 && *list) {
-			strncpy(text, *list, size - 1);
-			XFreeStringList(list);
-		}
-	}
-	text[size - 1] = '\0';
-	XFree(name.value);
-	return True;
-}
-
-void
-grabbuttons(struct Client *c, Bool focused)
-{
-	int i, j;
-
-	updatenumlockmask();
-	XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
-	if (focused) {
-		for (i = 0; i < LENGTH(buttons); ++i)
-			if (buttons[i].click == CLK_CLIENT)
-				for (j = 0; j < LENGTH(modifiers); j++)
-                    XGrabButton(dpy, buttons[i].button, buttons[i].mask |
-                          modifiers[j], c->win, False, ButtonPressMask |
-                          ButtonReleaseMask, GrabModeAsync, GrabModeSync,
-                          None, None);
-	} else
-        XGrabButton(dpy, AnyButton, AnyModifier, c->win, False,
-              ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
-              GrabModeSync, None, None);
-}
-
-void
-grabkeys(void)
-{
-	KeyCode code;
-	int i, j;
-
-	updatenumlockmask();
-	XUngrabKey(dpy, AnyKey, AnyModifier, root);
-	for (i = 0; LENGTH(keys) > i; ++i) {
-		if (0xFFFFFFFF == keys[i].mod) {
-			XGrabKey(dpy, keys[i].keysym, AnyModifier, root, True,
-			    GrabModeAsync, GrabModeAsync);
-		} else {
-			if ((code = XKeysymToKeycode(dpy, keys[i].keysym))) {
-				for (j = 0; j < LENGTH(modifiers); j++) {
-					fprintf(stderr, "HWM:Grab: (%08x,%08x) %08x, %08x\n",
-					    (int)keys[i].keysym, keys[i].mod,
-					    code, keys[i].mod | modifiers[j]);
-					XGrabKey(dpy, code, keys[i].mod |
-					    modifiers[j], root, True,
-					    GrabModeAsync, GrabModeAsync);
-				}
-			}
-		}
-	}
-}
-
-Bool
-isprotodel(struct Client *c)
-{
-	int i, n;
-	Atom *protocols;
-	Bool ret = False;
-
-	if (XGetWMProtocols(dpy, c->win, &protocols, &n)) {
-		for (i = 0; !ret && i < n; ++i)
-			if (protocols[i] == wmatom[WM_DELETE])
-				ret = True;
-		XFree(protocols);
-	}
-	return ret;
-}
-
-void
-keymove(const union Arg *arg)
-{
-	struct Client *c;
-	int next, test;
-
-	if (sel == NULL)
-		return;
-	switch (arg->i) {
-		case 0:
-			next = wx;
-			break;
-		case 1:
-			next = wy;
-			break;	
-		case 2:
-			next = wx + ww - WIDTH(sel);
-			break;
-		case 3:
-			next = wy + wh - HEIGHT(sel);
-	}
-	for (c = stack[workspaceCur]; c != NULL; c = c->next)
-		if ((arg->i & 1) == 0) {
-			if (c->y < sel->y + HEIGHT(sel)
-			    && c->y + HEIGHT(c) > sel->y) {
-				if (arg->i == 0) {
-					test = c->x + WIDTH(c);
-					if (test < sel->x && test > next)
-						next = test;
-				} else {
-					test = c->x - WIDTH(sel);
-					if (test > sel->x && test < next)
-						next = test;
-				}
-			}
-		} else {
-			if (c->x < sel->x + WIDTH(sel)
-			    && c->x + WIDTH(c) > sel->x) {
-				if (arg->i == 1) {
-					test = c->y + HEIGHT(c);
-					if (test < sel->y && test > next)
-						next = test;
-				} else {
-					test = c->y - HEIGHT(sel);
-					if (test > sel->y && test < next)
-						next = test;
-				}
-			}
-
-		}
-	if ((arg->i & 1) == 0)
-		resize(sel, next, sel->y, sel->w, sel->h, False);
-	else
-		resize(sel, sel->x, next, sel->w, sel->h, False);
-}
-
-void
-keypress(XEvent *e)
-{
-	XKeyEvent *ev = &e->xkey;
-	KeySym keysym;
-	int i;
-
-	keysym = XkbKeycodeToKeysym(dpy, (KeyCode)ev->keycode, 0, 0);
-	fprintf(stderr, "HWM:Keysym: %08x, %08x, %08x\n", ev->keycode, (unsigned
-	  int)keysym, ev->state);
-	for (i = 0; LENGTH(keys) > i; ++i) {
-		if (keysym == keys[i].keysym
-		    && CLEANMASK(keys[i].mod) == CLEANMASK(ev->state)
-		    && keys[i].func != NULL) {
-			keys[i].func(&keys[i].arg);
-		} else if (ev->keycode == keys[i].keysym
-		    && keys[i].mod == 0xFFFFFFFF
-		    && keys[i].func != NULL) {
-			keys[i].func(&keys[i].arg);
+	g_button_press_window = ev->event;
+	g_button_press_x = ev->root_x;
+	g_button_press_y = ev->root_y;
+	for (i = 0, bind = c_button_bind; LENGTH(c_button_bind) > i; ++i,
+	    ++bind) {
+		if (bind->click == click && bind->code == ev->detail &&
+		    bind->state == ev->state) {
+			bind->action(&arg);
 		}
 	}
 }
 
 void
-keyrelease(XEvent *e)
+event_configure_notify(xcb_generic_event_t const *a_event)
 {
-	XKeyEvent *ev = &e->xkey;
+	xcb_configure_notify_event_t const *ev = (xcb_configure_notify_event_t
+	    const *)a_event;
+	struct Client *client;
 
-	if (XKeysymToKeycode(dpy, XK_Super_L) == ev->keycode
-	    || XKeysymToKeycode(dpy, XK_Super_R) == ev->keycode)
-		focusSet();
-}
-
-void
-killclient(const union Arg *arg)
-{
-	XEvent ev;
-
-	if (!sel)
-		return;
-	if (isprotodel(sel)) {
-		ev.type = ClientMessage;
-		ev.xclient.window = sel->win;
-		ev.xclient.message_type = wmatom[WM_PROTOCOLS];
-		ev.xclient.format = 32;
-		ev.xclient.data.l[0] = wmatom[WM_DELETE];
-		ev.xclient.data.l[1] = CurrentTime;
-		XSendEvent(dpy, sel->win, False, NoEventMask, &ev);
-	} else
-		XKillClient(dpy, sel->win);
-}
-
-void
-manage(Window w, XWindowAttributes *wa)
-{
-	struct Client *c, *t = NULL;
-	Window trans = None;
-	XWindowChanges wc;
-
-	if ((c = malloc(sizeof(struct Client))) == NULL)
-		die("hwm: Could not allocate %d bytes.\n", sizeof(struct Client));
-	memset(c, 0, sizeof(struct Client));
-	c->win = w;
-
-	c->x = wa->x;
-	c->y = wa->y;
-	c->w = wa->width;
-	c->h = wa->height;
-	if (c->w < 10)
-		c->w = 10;
-	if (c->h < 10)
-		c->h = 10;
-	c->oldbw = wa->border_width;
-	if (c->w == sw && c->h == sh) {
-		c->x = sx;
-		c->y = sy;
-		c->bw = 0;
-	} else
-		c->bw = BORDER_WIDTH;
-
-	c->zoom.mode = 0;
-#if defined XKB
-	c->xkbGroupIdx = 0;
-#endif
-
-	wc.border_width = c->bw;
-	XConfigureWindow(dpy, w, CWBorderWidth, &wc);
-	XSetWindowBorder(dpy, w, dc.norm[COL_BORDER]);
-	configure(c);
-	updateSizeHints(c);
-	XSelectInput(dpy, w, EnterWindowMask | FocusChangeMask
-	    | KeyReleaseMask | PropertyChangeMask | StructureNotifyMask);
-/*	XSelectInput(dpy, w, EnterWindowMask | FocusChangeMask
-	    | PropertyChangeMask | StructureNotifyMask);*/
-	grabbuttons(c, False);
-	updateTitle(c);
-	if (XGetTransientForHint(dpy, w, &trans))
-		t = clientGet(trans);
-	c->workspace = t ? t->workspace : workspaceCur;
-	attach(c);
-	if (c->bw != 0)
-		place(c);
-	XRaiseWindow(dpy, c->win);
-	XMapWindow(dpy, c->win);
-	clientStateSet(c, NormalState);
-	XMoveWindow(dpy, c->win, c->x, c->y);
-	resize(c, c->x, c->y, c->w, c->h, True);
-	focus(c);
-}
-
-void
-maprequest(XEvent *e)
-{
-	static XWindowAttributes wa;
-	XMapRequestEvent *ev = &e->xmaprequest;
-
-	if (!XGetWindowAttributes(dpy, ev->window, &wa))
-		return;
-	if (wa.override_redirect)
-		return;
-	if (!clientGet(ev->window))
-		manage(ev->window, &wa);
-}
-
-void
-mousemove(const union Arg *arg)
-{
-	int omx, omy, ocx, ocy, di, nx, ny;
-	unsigned int dui;
-	struct Client *c, *f;
-	Window dummy;
-	XEvent ev;
-
-	if ((c = sel) == NULL)
-		return;
-	raisesel();
-	ocx = c->x;
-	ocy = c->y;
-	if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
-	    None, cursor[CUR_MOVE], CurrentTime) != GrabSuccess)
-		return;
-	XQueryPointer(dpy, root, &dummy, &dummy, &omx, &omy, &di, &di, &dui);
-	do {
-		XMaskEvent(dpy, MOUSEMASK | ExposureMask | SubstructureRedirectMask, &ev);
-		switch (ev.type) {
-			case ConfigureRequest:
-			case Expose:
-			case MapRequest:
-				handler[ev.type](&ev);
-				break;
-			case MotionNotify:
-				nx = ocx + (ev.xmotion.x - omx);
-				ny = ocy + (ev.xmotion.y - omy);
-				if (SNAP > 0) {
-					for (f = stack[workspaceCur]; f != NULL; f = f->next)
-						snapClient(c, &nx, &ny, f->x + WIDTH(f), f->y + HEIGHT(f), f->x, f->y);
-					snapClient(c, &nx, &ny, wx, wy, wx + ww, wy + wh);
-				}
-				resize(c, nx, ny, c->w, c->h, False);
-				break;
-		}
-	} while (ev.type != ButtonRelease);
-	XUngrabPointer(dpy, CurrentTime);
-}
-
-void
-mouseresize(const union Arg *arg)
-{
-	int ocx, ocy;
-	int nw, nh;
-	struct Client *c;
-	XEvent ev;
-
-	if (!(c = sel))
-		return;
-	raisesel();
-	ocx = c->x;
-	ocy = c->y;
-	if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
-	    None, cursor[CUR_RESIZE], CurrentTime) != GrabSuccess)
-		return;
-	XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w + c->bw - 1, c->h + c->bw - 1);
-	do {
-		XMaskEvent(dpy, MOUSEMASK | ExposureMask | SubstructureRedirectMask, &ev);
-		switch(ev.type) {
-		case ConfigureRequest:
-		case Expose:
-		case MapRequest:
-			handler[ev.type](&ev);
-			break;
-		case MotionNotify:
-			nw = MAX(ev.xmotion.x - ocx - 2 * c->bw + 1, 1);
-			nh = MAX(ev.xmotion.y - ocy - 2 * c->bw + 1, 1);
-
-			resize(c, c->x, c->y, nw, nh, True);
-			break;
-		}
-	} while (ev.type != ButtonRelease);
-	XWarpPointer(dpy, None, c->win, 0, 0, 0, 0,
-	    c->w + c->bw - 1, c->h + c->bw - 1);
-	XUngrabPointer(dpy, CurrentTime);
-	while (XCheckMaskEvent(dpy, EnterWindowMask, &ev))
-		;
-}
-
-void
-nextfocus(const union Arg *arg)
-{
-	struct Client *c = NULL;
-
-	tempFocus = True;
-	if (NULL != sel)
-		c = 0 < arg->i ? sel->next : sel->prev;
-	// TODO: Incorrect if going backwards.
-	if (NULL == c)
-		c = stack[workspaceCur];
-	if (NULL != c) {
-		focus(c);
-		raisesel();
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	client = client_get(ev->window, NULL);
+	if (ev->override_redirect && client) {
+		client_delete(client);
+	} else if (!ev->override_redirect && !client) {
+		client_add(ev->window);
 	}
 }
 
 void
-nextlang(const union Arg *arg)
+event_configure_request(xcb_generic_event_t const *a_event)
 {
-#if defined XKB
-	if (sel) {
-		sel->xkbGroupIdx = (sel->xkbGroupIdx + 1) % xkb_grpNum;
-		XkbLockGroup(dpy, XkbUseCoreKbd, sel->xkbGroupIdx);
-		drawBar();
+	xcb_configure_request_event_t const *ev =
+	    (xcb_configure_request_event_t const *)a_event;
+	uint32_t *p;
+	struct Client *client;
+	uint16_t mask;
+	int workspace;
+
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if ((client = client_get(ev->window, &workspace))) {
+		if (XCB_CONFIG_WINDOW_X & ev->value_mask) {
+			client->x = ev->x;
+		}
+		if (XCB_CONFIG_WINDOW_Y & ev->value_mask) {
+			client->y = MAX(ev->y, g_font_height);
+		}
+		if ((XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y) &
+		    ev->value_mask) {
+			client_move(client, g_workspace_cur == workspace ?
+			    VISIBLE : HIDDEN);
+		}
+		if (XCB_CONFIG_WINDOW_WIDTH & ev->value_mask) {
+			client->width = ev->width;
+		}
+		if (XCB_CONFIG_WINDOW_HEIGHT & ev->value_mask) {
+			client->height = ev->height;
+		}
+		if ((XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT) &
+		    ev->value_mask) {
+			client_resize(client, 0);
+		}
+		client_place(client);
+	} else {
+		p = g_values;
+		mask = (XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT) &
+		    ev->value_mask;
+		if (XCB_CONFIG_WINDOW_X & mask) {
+			*p++ = ev->x;
+		}
+		if (XCB_CONFIG_WINDOW_Y & mask) {
+			*p++ = MAX(ev->y, g_font_height);
+		}
+		if (XCB_CONFIG_WINDOW_WIDTH & mask) {
+			*p++ = ev->width;
+		}
+		if (XCB_CONFIG_WINDOW_HEIGHT & mask) {
+			*p++ = ev->height;
+		}
+		xcb_configure_window(g_conn, ev->window, mask, g_values);
 	}
-    grabkeys();
-#endif
 }
 
 void
-nextstatus(const union Arg *arg)
+event_destroy_notify(xcb_generic_event_t const *a_event)
 {
-	sidx++;
-	updateStatus();
-}
+	xcb_destroy_notify_event_t const *ev = (xcb_destroy_notify_event_t
+	    const *)a_event;
+	struct Client *client;
 
-void
-place(struct Client *c)
-{
-	int minInfl = 1 << 24;
-	int minRad = 1 << 24;
-	int minX = wx;
-	int minY = wy;
-
-	c->x = wx;
-	c->y = wy;
-	for (;;) {
-		int infl = 0;
-		int rad = 0;
-		struct Client *f;
-		int next;
-		int test;
-
-		for (f = stack[c->workspace]; f != NULL; f = f->next) {
-			int x1 = MAX(c->x, f->x);
-			int y1 = MAX(c->y, f->y);
-			int x2 = MIN(c->x + c->w + 2*c->bw, f->x + f->w + 2*f->bw);
-			int y2 = MIN(c->y + c->h + 2*c->bw, f->y + f->h + 2*f->bw);
-
-			infl += MAX(x2-x1, 0) * MAX(y2-y1, 0);
-		}
-		rad = c->x *c->x + c->y *c->y;
-		if (infl < minInfl) {
-			minInfl = infl;
-			minRad = rad;
-			minX = c->x;
-			minY = c->y;
-		} else if (infl == minInfl && rad < minRad) {
-			minRad = rad;
-			minX = c->x;
-			minY = c->y;
-		}
-
-		if (c->x + WIDTH(c) == wx + ww) {
-			if (c->y + HEIGHT(c) == wy + wh)
-				break;
-
-			next = wy + wh - HEIGHT(c);
-			for (f = stack[c->workspace]; f != NULL; f = f->next) {
-				test = f->y - HEIGHT(c);
-				if (test > c->y && test < next)
-					next = test;
-				test = f->y;
-				if (test > c->y && test < next)
-					next = test;
-				test = f->y + HEIGHT(f) - HEIGHT(c);
-				if (test > c->y && test < next)
-					next = test;
-				test = f->y + HEIGHT(f);
-				if (test > c->y && test < next)
-					next = test;
-			}
-			c->x = wx;
-			c->y = next;
-		} else {
-			next = wx + ww - WIDTH(c);
-			for (f = stack[c->workspace]; f != NULL; f = f->next) {
-				test = f->x - WIDTH(c);
-				if (test > c->x && test < next)
-					next = test;
-				test = f->x;
-				if (test > c->x && test < next)
-					next = test;
-				test = f->x + WIDTH(f) - WIDTH(c);
-				if (test > c->x && test < next)
-					next = test;
-				test = f->x + WIDTH(f);
-				if (test > c->x && test < next)
-					next = test;
-			}
-			c->x = next;
-		}
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if ((client = client_get(ev->window, NULL))) {
+		client_delete(client);
 	}
-
-	c->x = minX;
-	c->y = minY;
 }
 
 void
-propertynotify(XEvent *e)
+event_enter_notify(xcb_generic_event_t const *a_event)
 {
-	struct Client *c;
-	Window trans;
-	XPropertyEvent *ev = &e->xproperty;
+	xcb_enter_notify_event_t const *ev = (xcb_enter_notify_event_t const
+	    *)a_event;
+	struct Client *client;
+	int workspace;
 
-	if ((ev->window == root) && (ev->atom == XA_WM_NAME))
-		updateStatus();
-	else if (ev->state == PropertyDelete)
-		return;
-	else if ((c = clientGet(ev->window))) {
-		switch (ev->atom) {
-		default: break;
-		case XA_WM_TRANSIENT_FOR:
-			XGetTransientForHint(dpy, c->win, &trans);
-			break;
-		case XA_WM_NORMAL_HINTS:
-			updateSizeHints(c);
-			break;
-		case XA_WM_HINTS:
-			wmHintsUpdate(c);
-			drawBar();
-			break;
-		}
-		if (ev->atom == XA_WM_NAME || ev->atom == netatom[NET_WM_NAME]) {
-			updateTitle(c);
-			if (c == sel)
-				drawBar();
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if ((client = client_get(ev->event, &workspace)) && g_workspace_cur ==
+	    workspace) {
+		client_focus(client, 1, 0);
+	}
+}
+
+void
+event_expose(xcb_generic_event_t const *a_event)
+{
+	xcb_expose_event_t const *ev = (xcb_expose_event_t const *)a_event;
+
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if (0 == ev->count && ev->window == g_bar) {
+		bar_draw();
+	}
+}
+
+void
+event_handle(xcb_generic_event_t const *a_event)
+{
+	size_t i = XCB_EVENT_RESPONSE_TYPE(a_event);
+
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if (EVENT_MAX > i && g_event_handler[i]) {
+		g_event_handler[i](a_event);
+	} else {
+		printf("generic(0x%x)\n", a_event->response_type);
+	}
+	fflush(stdout);
+}
+
+void
+event_key_press(xcb_generic_event_t const *a_event)
+{
+	xcb_key_press_event_t const *ev = (xcb_key_press_event_t const
+	    *)a_event;
+	struct KeyBind *bind;
+	size_t i;
+
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	for (i = 0, bind = c_key_bind; LENGTH(c_key_bind) > i; ++i, ++bind) {
+		if (bind->code == ev->detail && bind->state == ev->state) {
+			bind->action(&bind->arg);
 		}
 	}
 }
 
 void
-quit(const union Arg *arg)
+event_map_request(xcb_generic_event_t const *a_event)
 {
-	running = False;
-}
+	xcb_map_request_event_t const *ev = (xcb_map_request_event_t const
+	    *)a_event;
+	struct Client *client;
 
-void
-raisesel(void)
-{
-	XEvent ev;
-
-	drawBar();
-	if (NULL == sel)
-		return;
-	XRaiseWindow(dpy, sel->win);
-	XSync(dpy, False);
-	while (XCheckMaskEvent(dpy, EnterWindowMask, &ev))
-		;
-}
-
-void
-resize(struct Client *c, int x, int y, int w, int h, Bool sizehints)
-{
-	XWindowChanges wc;
-
-	if (sizehints) {
-		Bool baseismin = c->basew == c->minw && c->baseh == c->minh;
-
-		w = MAX(1, w);
-		h = MAX(1, h);
-
-		if (!baseismin) {
-			w -= c->basew;
-			h -= c->baseh;
-		}
-
-		if (c->mina > 0 && c->maxa > 0) {
-			if (c->maxa < (float)w / h)
-				w = h * c->maxa;
-			else if (c->mina < (float)h / w)
-				h = w * c->mina;
-		}
-
-		if (baseismin) {
-			w -= c->basew;
-			h -= c->baseh;
-		}
-
-		if (c->incw)
-			w -= w % c->incw;
-		if (c->inch)
-			h -= h % c->inch;
-
-		w += c->basew;
-		h += c->baseh;
-
-		w = MAX(w, c->minw);
-		h = MAX(h, c->minh);
-
-		if (c->maxw)
-			w = MIN(w, c->maxw);
-
-		if (c->maxh)
-			h = MIN(h, c->maxh);
-	}
-	if (w <= 0 || h <= 0)
-		return;
-	if (x >= sx + sw)
-		x = sx + sw - 1;
-	if (y >= sy + sh)
-		y = sy + sh - 1;
-	if (x + w + 2 * c->bw < sx)
-		x = sx;
-	if (y + h + 2 * c->bw < sy)
-		y = sy;
-	if (h < dc.h)
-		h = dc.h;
-	if (w < dc.h)
-		w = dc.h;
-	if (c->x != x || c->y != y || c->w != w || c->h != h) {
-		c->x = wc.x = x;
-		c->y = wc.y = y;
-		c->w = wc.width = w;
-		c->h = wc.height = h;
-		wc.border_width = c->bw;
-		XConfigureWindow(dpy, c->win,
-		    CWX | CWY | CWWidth | CWHeight | CWBorderWidth, &wc);
-		configure(c);
-		XSync(dpy, False);
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	xcb_map_window(g_conn, ev->window);
+	client = (client = client_get(ev->window, NULL)) ? client :
+	    client_add(ev->window);
+	if (client) {
+		client_focus(client, 1, 1);
 	}
 }
 
 void
-restart(const union Arg *arg)
+event_property_notify(xcb_generic_event_t const *a_event)
 {
-	execlp("hwm", "hwm", NULL);
-	running = False;
-}
+	xcb_property_notify_event_t const *ev = (xcb_property_notify_event_t
+	    const *)a_event;
 
-void
-run(void)
-{
-	fd_set fds;
-	struct timeval timeout;
-
-	timeout.tv_sec = 0;
-	timeout.tv_usec = 0;
-
-	XSync(dpy, False);
-	while (running) {
-		if (timeout.tv_sec == 0 && timeout.tv_usec == 0) {
-			if (swarn) {
-				timeout.tv_sec = 0;
-				timeout.tv_usec = 1000 * WARN_RATE_MS;
-				swarn = 3 - swarn;
-			} else {
-				timeout.tv_sec = WARN_WAIT_S;
-				timeout.tv_usec = 0;
-			}
-			updateStatus();
-		}
-		FD_ZERO(&fds);
-		FD_SET(connection, &fds);
-		select(connection + 1, &fds, NULL, NULL, &timeout);
-
-		while (XPending(dpy)) {
-#if defined XKB
-			XkbEvent ev;
-			XNextEvent(dpy, &ev.core);
-			if (ev.type == xkb_event) {
-/*				fprintf(stderr, "HWM:%d\n", ev.any.xkb_type);*/
-				switch (ev.any.xkb_type) {
-					case XkbControlsNotify:
-						printf("HWM:Controls: num_groups = %d\n", ev.ctrls.num_groups);
-						break;
-					case XkbNamesNotify:
-						printf("HWM:Names: changed = %d, groups = \n", ev.names.changed_groups);
-						break;
-				}
-			} else {
-				if (xkb_grpNum < 0 && ev.type == KeyPress) {
-					XkbDescPtr xkb;
-					char *s;
-					int i;
-
-					xkb = XkbGetMap(dpy, 0, XkbUseCoreKbd);
-					XkbGetControls(dpy, XkbGroupNamesMask, xkb);
-					xkb_grpNum = xkb->ctrls->num_groups;
-					XkbGetNames(dpy, XkbGroupNamesMask, xkb);
-					for (i = 0; i < xkb_grpNum; ++i) {
-						s = XGetAtomName(dpy, xkb->names->groups[i]);
-						strcpy(xkb_grpName[i], s);
-						XFree(s);
-					}
-					XkbFreeKeyboard(xkb, XkbGroupNamesMask, True);
-				}
-				if (handler[ev.type] != NULL)
-					(handler[ev.type])(&ev.core);
-			}
-#else
-			XEvent ev;
-			XNextEvent(dpy, &ev);
-			if (handler[ev.type] != NULL)
-				(handler[ev.type])(&ev);
-#endif
-		}
-	}
-}
-
-void
-scan(void)
-{
-	Window d1, d2, *wins = NULL;
-	unsigned int i, num;
-	XWindowAttributes wa;
-
-	if (XQueryTree(dpy, root, &d1, &d2, &wins, &num)) {
-		for (i = 0; i < num; ++i) {
-			if (!XGetWindowAttributes(dpy, wins[i], &wa)
-			    || wa.override_redirect
-			    || XGetTransientForHint(dpy, wins[i], &d1))
-				continue;
-			if (wa.map_state == IsViewable
-			    || getstate(wins[i]) == IconicState)
-				manage(wins[i], &wa);
-		}
-		for (i = 0; i < num; ++i) {
-			if (!XGetWindowAttributes(dpy, wins[i], &wa))
-				continue;
-			if (XGetTransientForHint(dpy, wins[i], &d1)
-			    && (wa.map_state == IsViewable
-			    || getstate(wins[i]) == IconicState))
-				manage(wins[i], &wa);
-		}
-		if (wins)
-			XFree(wins);
-	}
-	arrange();
-	focus(NULL);
-}
-
-void
-clientStateSet(struct Client *c, long state)
-{
-	long data[] = {state, None};
-
-	XChangeProperty(dpy, c->win, wmatom[WM_STATE], wmatom[WM_STATE], 32,
-			PropModeReplace, (unsigned char *)data, 2);
-}
-
-void
-setup(void)
-{
-	XSetWindowAttributes wa;
-	char *def, **missing = NULL;
-	int i, n;
-
-	connection = ConnectionNumber(dpy);
-	screen = DefaultScreen(dpy);
-	root = RootWindow(dpy, screen);
-
-	dc.font.set = XCreateFontSet(dpy, font, &missing, &n, &def);
-	if (NULL != missing) {
-		while (0 < n--)
-			fprintf(stderr, "HWM:hwm: Missing fontset '%s'.\n",
-			    missing[n]);
-		XFreeStringList(missing);
-	}
-	if (NULL != dc.font.set) {
-/*		XFontSetExtents *font_extents;a*/
-		XFontStruct **xfonts;
-		char **font_names;
-
-		dc.font.ascent = dc.font.descent = 0;
-/*		font_extents = XExtentsOfFontSet(dc.font.set);*/
-		n = XFontsOfFontSet(dc.font.set, &xfonts, &font_names);
-		for (i = 0, dc.font.ascent = 0, dc.font.descent = 0; i < n;
-		    i++) {
-			dc.font.ascent = MAX(dc.font.ascent, (*xfonts)->ascent);
-			dc.font.descent = MAX(dc.font.descent,
-			    (*xfonts)->descent);
-			xfonts++;
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if (g_root == ev->window) {
+		if (XCB_ATOM_WM_NAME == ev->atom) {
+			root_name_update();
+			g_bar_redraw = 1;
 		}
 	} else {
-		if (NULL == (dc.font.xfont = XLoadQueryFont(dpy, font)) &&
-		    NULL == (dc.font.xfont = XLoadQueryFont(dpy, "fixed")))
-			die("hwn: Could not load font '%s' nor fixed.\n", font);
-		dc.font.ascent = dc.font.xfont->ascent;
-		dc.font.descent = dc.font.xfont->descent;
-	}
-	dc.font.height = dc.font.ascent + dc.font.descent;
+		struct Client *client;
 
-	sx = 0;
-	sy = 0;
-	sw = DisplayWidth(dpy, screen);
-	sh = DisplayHeight(dpy, screen);
-	dc.h = dc.font.height + 2;
-	updategeom();
+		printf("property notify = %d\n", ev->atom);
+		if ((client = client_get(ev->window, NULL))) {
+			if (XCB_ATOM_WM_HINTS == ev->atom) {
+				xcb_icccm_wm_hints_t hints;
 
-	wmatom[WM_PROTOCOLS] = XInternAtom(dpy, "WM_PROTOCOLS", False);
-	wmatom[WM_DELETE] = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
-	wmatom[WM_STATE] = XInternAtom(dpy, "WM_STATE", False);
-	netatom[NET_SUPPORTED] = XInternAtom(dpy, "_NET_SUPPORTED", False);
-	netatom[NET_WM_NAME] = XInternAtom(dpy, "_NET_WM_NAME", False);
-
-	wa.cursor = cursor[CUR_NORMAL] = XCreateFontCursor(dpy, XC_left_ptr);
-	cursor[CUR_RESIZE] = XCreateFontCursor(dpy, XC_sizing);
-	cursor[CUR_MOVE] = XCreateFontCursor(dpy, XC_fleur);
-
-	dc.norm[COL_BORDER] = colorGet(normbordercolor);
-	dc.norm[COL_BG] = colorGet(normbgcolor);
-	dc.norm[COL_FG] = colorGet(normfgcolor);
-	dc.sel[COL_BORDER] = colorGet(selbordercolor);
-	dc.sel[COL_BG] = colorGet(selbgcolor);
-	dc.sel[COL_FG] = colorGet(selfgcolor);
-	dc.warn[0][COL_BG] = colorGet(warn1bgcolor);
-	dc.warn[0][COL_FG] = colorGet(warn1fgcolor);
-	dc.warn[1][COL_BG] = colorGet(warn2bgcolor);
-	dc.warn[1][COL_FG] = colorGet(warn2fgcolor);
-	dc.drawable = XCreatePixmap(dpy, root, DisplayWidth(dpy, screen), dc.h,
-	    DefaultDepth(dpy, screen));
-	dc.gc = XCreateGC(dpy, root, 0, 0);
-	XSetLineAttributes(dpy, dc.gc, 1, LineSolid, CapButt, JoinMiter);
-	if (NULL == dc.font.set)
-		XSetFont(dpy, dc.gc, dc.font.xfont->fid);
-
-	wa.override_redirect = 1;
-	wa.background_pixmap = ParentRelative;
-	wa.event_mask = ButtonPressMask | ExposureMask;
-	barwin = XCreateWindow(dpy, root, wx, by, ww, dc.h, 0,
-	    DefaultDepth(dpy, screen), CopyFromParent,
-	    DefaultVisual(dpy, screen),
-	    CWOverrideRedirect | CWBackPixmap | CWEventMask, &wa);
-	XDefineCursor(dpy, barwin, cursor[CUR_NORMAL]);
-	XMapRaised(dpy, barwin);
-	updateStatus();
-
-	XChangeProperty(dpy, root, netatom[NET_SUPPORTED], XA_ATOM, 32,
-	    PropModeReplace, (unsigned char *)netatom, NET_LAST);
-
-	wa.event_mask = SubstructureRedirectMask | SubstructureNotifyMask
-	    | ButtonPressMask | KeyReleaseMask
-	    | EnterWindowMask | LeaveWindowMask
-	    | StructureNotifyMask | PropertyChangeMask;
-	XChangeWindowAttributes(dpy, root, CWEventMask | CWCursor, &wa);
-	XSelectInput(dpy, root, wa.event_mask);
-
-	grabkeys();
-
-#if defined XKB
-	XkbSelectEvents(dpy, XkbUseCoreKbd, XkbAllEventsMask, 1);
-#endif
-}
-
-void
-sigchld(int signal)
-{
-	while (0 < waitpid(-1, NULL, WNOHANG))
-		;
-}
-
-void
-snapClient(struct Client *c, int *nx, int *ny, int left, int top, int right,
-    int bottom)
-{
-	int x1 = *nx;
-	int y1 = *ny;
-	int x2 = x1 + WIDTH(c);
-	int y2 = y1 + HEIGHT(c);
-
-	if (x2 > right && x2 < right + SNAP)
-		x1 = right - WIDTH(c);
-	if (y2 > bottom && y2 < bottom + SNAP)
-		y1 = bottom - HEIGHT(c);
-	if (x1 < left && x1 > left - SNAP)
-		x1 = left;
-	if (y1 < top && y1 > top - SNAP)
-		y1 = top;
-	*nx = x1;
-	*ny = y1;
-}
-
-void
-spawn(const union Arg *arg)
-{
-	signal(SIGCHLD, sigchld);
-	if (0 == fork()) {
-		if (NULL != dpy)
-			close(connection);
-		setsid();
-		execvp(((char **)arg->v)[0], (char **)arg->v);
-		fprintf(stderr, "HWM:hwm: execvp %s", ((char **)arg->v)[0]);
-		perror(" failed");
-		exit(0);
-	}
-}
-
-int
-textnw(const char *text, int len)
-{
-	XRectangle r;
-
-	if (NULL != dc.font.set) {
-		XmbTextExtents(dc.font.set, text, len, NULL, &r);
-		return r.width;
-	}
-	return XTextWidth(dc.font.xfont, text, len);
-}
-
-void
-workspaceTo(const union Arg *arg)
-{
-	if (NULL != sel) {
-		detach(sel);
-		sel->workspace = arg->i;
-		attach(sel);
-		place(sel);
-		arrange();
-		focus(NULL);
-	}
-}
-
-void
-unmanage(struct Client *c)
-{
-	XWindowChanges wc;
-
-	wc.border_width = c->oldbw;
-	XGrabServer(dpy);
-	XSetErrorHandler(xerrordummy);
-	XConfigureWindow(dpy, c->win, CWBorderWidth, &wc);
-	detach(c);
-	if (sel == c)
-		focus(NULL);
-	XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
-	clientStateSet(c, WithdrawnState);
-	free(c);
-	XSync(dpy, False);
-	XSetErrorHandler(xerror);
-	XUngrabServer(dpy);
-}
-
-void
-unmapNotify(XEvent *e)
-{
-	struct Client *c;
-
-	if (NULL != (c = clientGet(e->xunmap.window)))
-		unmanage(c);
-}
-
-void
-updateBar(void)
-{
-	if (None != dc.drawable)
-		XFreePixmap(dpy, dc.drawable);
-	dc.drawable = XCreatePixmap(dpy, root, ww, dc.h, DefaultDepth(dpy,
-	    screen));
-	XMoveResizeWindow(dpy, barwin, wx, by, ww, dc.h);
-}
-
-void
-updategeom(void)
-{
-#if defined XINERAMA
-	XineramaScreenInfo *info = NULL;
-	int n, i = 0;
-
-	if (XineramaIsActive(dpy) && (info = XineramaQueryScreens(dpy, &n))) { 
-		if (n > 1) {
-			Window dummy;
-			int di, x, y;
-			unsigned int dui;
-
-			if (XQueryPointer(dpy, root, &dummy, &dummy, &x, &y,
-			    &di, &di, &dui))
-				for (i = 0; i < n; ++i)
-					if (INRECT(x, y, info[i].x_org,
-					    info[i].y_org, info[i].width,
-					    info[i].height))
-						break;
+				if (xcb_icccm_get_wm_hints_reply(g_conn,
+				    xcb_icccm_get_wm_hints(g_conn,
+				    ev->window), &hints, NULL)) {
+					printf("  Flags = %0x\n",
+					    hints.flags);
+					if ((XCB_ICCCM_WM_HINT_X_URGENCY &
+					    hints.flags) && g_focus != client)
+					{
+						client->is_urgent = 1;
+						g_bar_redraw = 1;
+					}
+				}
+			} else if (XCB_ATOM_WM_NORMAL_HINTS == ev->atom) {
+				xcb_icccm_get_wm_normal_hints_reply(g_conn,
+				    xcb_icccm_get_wm_normal_hints(g_conn,
+				    client->window), &client->hints, NULL);
+			} else if (g_NET_WM_NAME == ev->atom ||
+			    XCB_ATOM_WM_NAME == ev->atom) {
+				client_name_update(client);
+				g_bar_redraw = 1;
+			}
 		}
-		wx = info[i].x_org;
-		wy = topbar ? info[i].y_org + dc.h : info[i].y_org;
-		ww = info[i].width;
-		wh = info[i].height - dc.h;
-		XFree(info);
-	} else
-#endif
-	{
-		wx = sx;
-		wy = topbar ? sy + dc.h : sy;
-		ww = sw;
-		wh = sh - dc.h;
 	}
-
-	by = topbar ? wy - dc.h : wy + wh;
 }
 
 void
-updatenumlockmask(void)
+event_unmap_notify(xcb_generic_event_t const *a_event)
 {
-	XModifierKeymap *modmap;
-	int i, j;
+	xcb_unmap_notify_event_t const *ev = (xcb_unmap_notify_event_t const
+	    *)a_event;
+	struct Client *client;
 
-	numlockmask = 0;
-	modmap = XGetModifierMapping(dpy);
-	for (i = 0; i < 8; ++i)
-		for (j = 0; j < modmap->max_keypermod; j++)
-			if (modmap->modifiermap[i * modmap->max_keypermod +
-			    j] == XKeysymToKeycode(dpy, XK_Num_Lock))
-				numlockmask = (1 << i);
-	XFreeModifiermap(modmap);
-	modifiers[0] = 0;
-	modifiers[1] = LockMask;
-	modifiers[2] = numlockmask;
-	modifiers[3] = LockMask | numlockmask;
+printf("%s\n", __FUNCTION__); fflush(stdout);
+	if ((client = client_get(ev->window, NULL))) {
+		client_delete(client);
+	}
 }
 
 void
-updateSizeHints(struct Client *c)
+root_name_update(void)
 {
-	long msize;
-	XSizeHints size;
+	xcb_icccm_get_text_property_reply_t icccm;
 
-	if (!XGetWMNormalHints(dpy, c->win, &size, &msize))
-		size.flags = PSize; 
-	if (PBaseSize & size.flags) {
-		c->basew = size.base_width;
-		c->baseh = size.base_height;
-	} else if (PMinSize & size.flags) {
-		c->basew = size.min_width;
-		c->baseh = size.min_height;
-	} else
-		c->basew = c->baseh = 0;
-	if (PResizeInc & size.flags) {
-		c->incw = size.width_inc;
-		c->inch = size.height_inc;
-	} else
-		c->incw = c->inch = 0;
-	if (PMaxSize & size.flags) {
-		c->maxw = size.max_width;
-		c->maxh = size.max_height;
-	} else
-		c->maxw = c->maxh = 0;
-	if (PMinSize & size.flags) {
-		c->minw = size.min_width;
-		c->minh = size.min_height;
-	} else if (PBaseSize & size.flags) {
-		c->minw = size.base_width;
-		c->minh = size.base_height;
-	} else
-		c->minw = c->minh = 0;
-	if (PAspect & size.flags) {
-		c->mina = (float)size.min_aspect.y / (float)size.min_aspect.x;
-		c->maxa = (float)size.max_aspect.x / (float)size.max_aspect.y;
-	} else
-		c->maxa = c->mina = 0.0;
-}
+	if (xcb_icccm_get_wm_name_reply(g_conn, xcb_icccm_get_wm_name(g_conn,
+	    g_root), &icccm, NULL)) {
+		char const *p = icccm.name;
+		size_t len = icccm.name_len;
 
-void
-updateStatus(void)
-{
-	char tmp[256], *p;
-	int i;
-
-	if (gettextprop(root, XA_WM_NAME, tmp, sizeof tmp)) {
-		for (p = tmp; '!' != *p && '\0' != *p; ++p)
-			;
-		swarn = '!' == *p ? (swarn ? swarn : 1) : 0;
-		for (p = tmp, i = 0; '\0' != *p && sidx > i; ++p)
-			if ('#' == *p)
-				++i;
-		if (sidx > i) {
-			sidx = 0;
-			p = tmp;
-		}
-		if ('!' == p[0])
+		if ((g_root_is_urgent = ('!' == icccm.name[0]))) {
 			++p;
-		for (i = 0; '\0' != p[i] && '#' != p[i]; ++i)
-			;
-		memcpy(stext, p, i);
-		stext[i] = '\0';
-	} else
-		strcpy(stext, "hwm");
-	drawBar();
-}
-
-void
-updateTitle(struct Client *c)
-{
-	if (!gettextprop(c->win, netatom[NET_WM_NAME], c->name, sizeof
-	    c->name))
-		gettextprop(c->win, XA_WM_NAME, c->name, sizeof c->name);
-}
-
-void
-wmHintsUpdate(struct Client *c)
-{
-	XWMHints *wmh;
-
-	if (NULL != (wmh = XGetWMHints(dpy, c->win))) {
-		if (sel == c && XUrgencyHint & wmh->flags) {
-			wmh->flags &= ~XUrgencyHint;
-			XSetWMHints(dpy, c->win, wmh);
-		} else
-			c->isurgent = (XUrgencyHint & wmh->flags) ? True :
-			    False;
-		XFree(wmh);
+			--len;
+		}
+		string_convert(&g_root_name, p, len);
+		xcb_icccm_get_text_property_reply_wipe(&icccm);
+	} else {
+		string_convert(&g_root_name, "<hwm>", 5);
 	}
 }
 
 void
-view(const union Arg *arg)
+string_convert(struct String *a_out, char const *a_in, size_t a_inlen)
 {
-	if (arg->i == workspaceCur)
-		return;
-	workspaceCur = arg->i;
-	arrange();
-	focus(NULL);
-}
+	char *p = (char *)a_out->str;
+	size_t len = NAME_LEN;
 
-void
-viewStep(const union Arg *arg)
-{
-	if (0 > arg->i)
-		workspaceCur = (workspaceCur + WORKSPACE_NUM - 1) %
-		    WORKSPACE_NUM;
-	else
-		workspaceCur = (workspaceCur + 1) % WORKSPACE_NUM;
-	arrange();
-	focus(NULL);
+	iconv(g_iconv, (char **)&a_in, &a_inlen, (char **)&p, &len);
+	a_out->length = (NAME_LEN - len) / 2;
 }
 
 int
-xerror(Display *dpy, XErrorEvent *ee)
+text_draw(struct String const *a_text, int a_is_focused, int a_is_urgent, int
+    a_x, int a_y)
 {
-	if (BadWindow == ee->error_code ||
-	    (X_SetInputFocus == ee->request_code && BadMatch == ee->error_code) ||
-	    (X_PolyText8 == ee->request_code && BadDrawable == ee->error_code) ||
-	    (X_PolyFillRectangle == ee->request_code && BadDrawable == ee->error_code) ||
-	    (X_PolySegment == ee->request_code && BadDrawable == ee->error_code) ||
-	    (X_ConfigureWindow == ee->request_code && BadMatch == ee->error_code) ||
-	    (X_GrabButton == ee->request_code && BadAccess == ee->error_code) ||
-	    (X_GrabKey == ee->request_code && BadAccess == ee->error_code) ||
-	    (X_CopyArea == ee->request_code && BadDrawable == ee->error_code))
-		return 0;
-	fprintf(stderr, "HWM:hwm: Fatal error: request code=%d, error code=%d\n",
-	    ee->request_code, ee->error_code);
-	return xerrorxlib(dpy, ee);
+	xcb_rectangle_t rect;
+	uint32_t bg = a_is_urgent ? (g_blink ? g_color_urgent2_bg :
+	    g_color_urgent1_bg) : a_is_focused ? g_color_bar_fg :
+	    g_color_bar_bg;
+	uint32_t fg = a_is_urgent ? (g_blink ? g_color_urgent2_fg :
+	    g_color_urgent1_fg) : a_is_focused ? g_color_bar_bg :
+	    g_color_bar_fg;
+	int width;
+
+	width = text_width(a_text);
+	rect.x = a_x;
+	rect.y = a_y;
+	rect.width = width;
+	rect.height = g_font_height;
+	xcb_change_gc(g_conn, g_gc, XCB_GC_FOREGROUND, &bg);
+	xcb_poly_fill_rectangle(g_conn, g_pixmap, g_gc, 1, &rect);
+
+	xcb_change_gc(g_conn, g_gc, XCB_GC_BACKGROUND, &bg);
+	xcb_change_gc(g_conn, g_gc, XCB_GC_FOREGROUND, &fg);
+	xcb_image_text_16(g_conn, a_text->length, g_pixmap, g_gc, a_x +
+	    TEXT_PADDING, a_y + g_font_ascent, (xcb_char2b_t const
+	    *)a_text->str);
+
+	--rect.width;
+	--rect.height;
+	xcb_poly_rectangle(g_conn, g_pixmap, g_gc, 1, &rect);
+
+	return width;
 }
 
 int
-xerrorcheck(Display *dpy, XErrorEvent *ee)
+text_width(struct String const *a_text)
 {
-	otherwm = True;
-	return -1;
+	xcb_query_text_extents_reply_t *reply;
+	int width;
+
+	reply = xcb_query_text_extents_reply(g_conn,
+	    xcb_query_text_extents(g_conn, g_font, a_text->length,
+	    (xcb_char2b_t const *)a_text->str), NULL);
+	width = reply->overall_width;
+	free(reply);
+	return TEXT_PADDING + width + TEXT_PADDING;
 }
 
 int
-xerrordummy(Display *dpy, XErrorEvent *ee)
+main()
 {
-	return 0;
-}
+	xcb_font_t cursor_font;
+	xcb_screen_iterator_t it;
+	struct pollfd fds;
+	FILE *file;
+	xcb_query_font_reply_t *font_reply;
+	xcb_query_tree_reply_t *tree_reply;
+	struct KeyBind const *bind;
+	size_t i;
+	int screen_no, error;
 
-void
-zoom(const union Arg *arg)
-{
-	if (NULL == sel)
-		return;
-	if (arg->i == sel->zoom.mode) {
-		resize(sel, sel->zoom.oldx, sel->zoom.oldy, sel->zoom.oldw,
-		    sel->zoom.oldh, True);
-		sel->zoom.mode = 0;
-		return;
+	/* Basic setup. */
+	if ((iconv_t)-1 == (g_iconv = iconv_open("UCS-2BE", "UTF8"))) {
+		die("Could not open iconv(UCS-2BE, UTF8).");
 	}
-	if (0 == sel->zoom.mode) {
-		sel->zoom.oldx = sel->x;
-		sel->zoom.oldy = sel->y;
-		sel->zoom.oldw = sel->w;
-		sel->zoom.oldh = sel->h;
+	for (i = 0; WORKSPACE_NUM > i; ++i) {
+		string_convert(&g_workspace_label[i], c_workspace_label[i],
+		    strlen(c_workspace_label[i]));
 	}
-	sel->zoom.mode = arg->i;
-	if (1 == arg->i)
-		resize(sel, wx, wy, ww - 2 * sel->bw, wh - 2 * sel->bw,
-		    True);
-	else
-		resize(sel, sel->zoom.oldx, wy, sel->zoom.oldw, wh - 2 *
-		    sel->bw, True);
-}
 
-int
-main(int argc, char *argv[])
-{
-	if (argc != 1)
-		die("Usage: hwm [-v]\n");
+	g_conn = xcb_connect(NULL, &screen_no);
+	if (!g_conn) {
+		die("NULL X11 connection.");
+	}
+	error = xcb_connection_has_error(g_conn);
+	if (0 != error) {
+		die("X11 connection error=%d.", error);
+	}
+	for (it = xcb_setup_roots_iterator(xcb_get_setup(g_conn)); 0 <
+	    screen_no--; xcb_screen_next(&it))
+		;
+	g_screen = it.data;
+	if (!g_screen) {
+		die("Could not get current screen.");
+	}
+	g_width = g_screen->width_in_pixels;
+	g_height = g_screen->height_in_pixels;
+	g_root = g_screen->root;
 
-	if (setlocale(LC_CTYPE, "") == NULL || !XSupportsLocale())
-		fprintf(stderr, "HWM:Warning: no locale support.\n");
+	g_event_handler[XCB_KEY_PRESS] = event_key_press;
+	g_event_handler[XCB_BUTTON_PRESS] = event_button_press;
+	g_event_handler[XCB_ENTER_NOTIFY] = event_enter_notify;
+	g_event_handler[XCB_EXPOSE] = event_expose;
+	g_event_handler[XCB_DESTROY_NOTIFY] = event_destroy_notify;
+	g_event_handler[XCB_UNMAP_NOTIFY] = event_unmap_notify;
+	g_event_handler[XCB_MAP_REQUEST] = event_map_request;
+	g_event_handler[XCB_CONFIGURE_NOTIFY] = event_configure_notify;
+	g_event_handler[XCB_CONFIGURE_REQUEST] = event_configure_request;
+	g_event_handler[XCB_PROPERTY_NOTIFY] = event_property_notify;
 
-#if defined XKB
-	if (NULL == (dpy = XkbOpenDisplay(NULL, &xkb_event, NULL, NULL, NULL,
-	    NULL)))
-#else
-	if (NULL == (dpy = XOpenDisplay(NULL)))
-#endif
-		die("hwm: Could not open display.\n");
+	/* Pointer cursors. */
+	cursor_font = xcb_generate_id(g_conn);
+	xcb_open_font(g_conn, cursor_font, 6, "cursor");
+	g_cursor_normal = cursor_get(cursor_font, XC_left_ptr);
+	g_cursor_move = cursor_get(cursor_font, XC_fleur);
+	g_cursor_resize = cursor_get(cursor_font, XC_bottom_right_corner);
 
-	wmCheckOther();
-	setup();
-	scan();
-	run();
-	cleanup();
+	/* Can we start a WM? */
+	g_values[0] = XCB_EVENT_MASK_STRUCTURE_NOTIFY |
+	    XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
+	    XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT |
+	    XCB_EVENT_MASK_PROPERTY_CHANGE;
+	g_values[1] = g_cursor_normal;
+	HWM_XCB_CHECKED("Is another WM running?",
+	    xcb_change_window_attributes_checked, (g_conn, g_root,
+	    XCB_CW_EVENT_MASK | XCB_CW_CURSOR, g_values));
 
-	XCloseDisplay(dpy);
-	exit(EXIT_SUCCESS);
+	/* Atoms. */
+	g_NET_WM_NAME = atom_get("_NET_WM_NAME");
+	g_NET_WM_STATE_DEMANDS_ATTENTION =
+	    atom_get("_NET_WM_STATE_DEMANDS_ATTENTION");
+
+	/* Graphics. */
+	g_font = xcb_generate_id(g_conn);
+	xcb_open_font(g_conn, g_font, 5, FONT_FACE);
+	font_reply = xcb_query_font_reply(g_conn, xcb_query_font(g_conn,
+	    g_font), NULL);
+	if (!font_reply) {
+		die("Could not load font face '%s'.", FONT_FACE);
+	}
+	g_font_ascent = font_reply->font_ascent;
+	g_font_height = g_font_ascent + font_reply->font_descent;
+	free(font_reply);
+
+	g_gc = xcb_generate_id(g_conn);
+	xcb_create_gc(g_conn, g_gc, g_root, 0, NULL);
+
+	g_pixmap = xcb_generate_id(g_conn);
+	xcb_create_pixmap(g_conn, g_screen->root_depth, g_pixmap, g_root,
+	    g_width, g_font_height);
+
+	/* Configs. */
+	g_color_border_focus = color_get(BORDER_FOCUS);
+	g_color_border_unfocus = color_get(BORDER_UNFOCUS);
+	g_color_bar_bg = color_get(BAR_BG);
+	g_color_bar_fg = color_get(BAR_FG);
+	g_color_urgent1_bg = color_get(URGENT1_BG);
+	g_color_urgent1_fg = color_get(URGENT1_FG);
+	g_color_urgent2_bg = color_get(URGENT2_BG);
+	g_color_urgent2_fg = color_get(URGENT2_FG);
+
+	for (i = 0, bind = c_key_bind; LENGTH(c_key_bind) > i; ++i, ++bind) {
+		xcb_grab_key(g_conn, 1, g_root, bind->state, bind->code,
+		    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+	}
+
+	for (i = 0; WORKSPACE_NUM > i; ++i) {
+		TAILQ_INIT(&g_client_list[i]);
+	}
+
+	/* Furnish existing windows, and reuse persisted info. */
+	tree_reply = xcb_query_tree_reply(g_conn, xcb_query_tree(g_conn,
+	    g_root), NULL);
+	if (tree_reply) {
+		char line[80], *p;
+		int j[10];
+		xcb_window_t *w;
+		size_t num;
+
+		w = xcb_query_tree_children(tree_reply);
+		num = xcb_query_tree_children_length(tree_reply);
+		if ((file = fopen(PERSIST_FILE, "rb"))) {
+			while (fgets(line, 80, file)) {
+				for (p = strtok(line, " "), i = 0; p && 10 >
+				    i; p = strtok(NULL, " "), ++i) {
+					j[i] = strtol(p, NULL, 10);
+				}
+				if (10 == i) {
+					for (i = 0; num > i; ++i) {
+						if (j[0] == (int)w[i]) {
+							client_add_details(
+							    w[i], j + 1);
+							w[i] = 0;
+							break;
+						}
+					}
+				}
+			}
+			fclose(file);
+		}
+		for (i = 0; num > i; ++i) {
+			if (!client_get(w[i], NULL)) {
+				client_add(w[i]);
+			}
+		}
+		free(tree_reply);
+		action_furnish(NULL);
+	}
+	client_focus(NULL, 1, 1);
+
+	/* Bar. */
+	g_bar = xcb_generate_id(g_conn);
+	g_values[0] = g_color_bar_bg;
+	g_values[1] = 1;
+	g_values[2] = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE;
+	xcb_create_window(g_conn, XCB_COPY_FROM_PARENT, g_bar, g_root, 0, 0,
+	    g_width, g_font_height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+	    XCB_COPY_FROM_PARENT, XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT
+	    | XCB_CW_EVENT_MASK, g_values);
+	xcb_map_window(g_conn, g_bar);
+	root_name_update();
+	bar_draw();
+
+	xcb_flush(g_conn);
+
+	/* Main loop. */
+	fds.fd = xcb_get_file_descriptor(g_conn);
+	fds.events = POLLIN;
+	g_has_urgent = 0;
+	g_timeout = TIMEOUT_NORMAL;
+	for (g_run = RUN_LOOP; RUN_LOOP == g_run;) {
+		xcb_generic_event_t *ev;
+
+		poll(&fds, 1, g_timeout);
+		g_bar_redraw = 0;
+		while ((ev = xcb_poll_for_event(g_conn))) {
+			event_handle(ev);
+			xcb_flush(g_conn);
+			free(ev);
+		}
+		if (g_has_urgent) {
+			struct timeval tv;
+			double dt, time_cur;
+
+			gettimeofday(&tv, NULL);
+			time_cur = 1e3 * tv.tv_sec + 1e-3 * tv.tv_usec;
+			dt = time_cur - g_time_prev;
+			g_time_prev = time_cur;
+			g_timeout = MIN(g_timeout - dt, TIMEOUT_BLINK);
+			if (0 >= g_timeout) {
+				g_timeout = TIMEOUT_BLINK;
+				g_blink ^= 1;
+				g_bar_redraw = 1;
+			}
+		} else {
+			g_timeout = TIMEOUT_NORMAL;
+			g_blink = 0;
+		}
+		if (g_bar_redraw) {
+			bar_draw();
+			xcb_flush(g_conn);
+		}
+	}
+
+	/* Quit. */
+	xcb_destroy_window(g_conn, g_bar);
+	if (RUN_RESTART == g_run) {
+		file = fopen(PERSIST_FILE, "wb");
+		for (i = 0; WORKSPACE_NUM > i; ++i) {
+			while (!TAILQ_EMPTY(&g_client_list[i])) {
+				struct Client *c;
+
+				c = TAILQ_FIRST(&g_client_list[i]);
+				fprintf(file, "%d %d %d %d %d %d %d %d %d "
+				    "%d\n", c->window, (int)i, c->is_urgent,
+				    c->x, c->y, c->maximize, c->max_old_x,
+				    c->max_old_y, c->max_old_width,
+				    c->max_old_height);
+				TAILQ_REMOVE(&g_client_list[i], c, next);
+				client_delete(c);
+			}
+		}
+		fclose(file);
+	} else {
+		remove(PERSIST_FILE);
+	}
+	xcb_flush(g_conn);
+	xcb_disconnect(g_conn);
+
+	iconv_close(g_iconv);
+
+	return RUN_RESTART == g_run;
 }

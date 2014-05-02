@@ -1,17 +1,24 @@
-include config.mk
+PREFIX=~/opt
 
-all: hwm.c config.h
-	${CC} ${CFLAGS} -o hwm hwm.c ${LDFLAGS}
+CC=cc
+
+CFLAGS:=-ansi -ggdb -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wuninitialized
+LDFLAGS:=`pkg-config xcb-icccm --libs`
+
+all: hwm
+
+hwm: hwm.c Makefile
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
-	rm -f hwm hwm.o
+	rm -f hwm
 
 install: all
-	mkdir -p ${PREFIX}/bin
-	cp -f hwm ${PREFIX}/bin
-	chmod 755 ${PREFIX}/bin/hwm
+	mkdir -p $(PREFIX)/bin
+	cp -f hwm $(PREFIX)/bin
+	chmod 755 $(PREFIX)/bin/hwm
 
 uninstall:
-	rm -f ${PREFIX}/bin/hwm
+	rm -f $(PREFIX)/bin/hwm
 
 .PHONY: all clean dist install uninstall

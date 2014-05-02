@@ -1,42 +1,77 @@
 hwm - hans's window manager
 ===========================
-hwn is a minimal X wm based on dwm.
+
+hwm is a _very_ light-weight WM, based initially on dwm but then completely
+rewritten with XCB. It's a WM for me.
+
+
+Features
+--------
+Having very few features, stuff I don't need are not in.
+Almost as fast as lightning.
+Fewer than 2k LOC without being obfuscated.
+Stacking with "smart" placement and furnishing.
+Make windows jump around with the keyboard.
+Persistent window data at restarts.
+Very few mouse-dependent actions.
 
 
 Requirements
 ------------
-In order to build hwm you need the Xlib header files. Xinerama and XKB are
-compile time options.
+You will need XCB and a generally healthy Linux system.
 
 
 Installation
 ------------
-Edit config.mk to match your local setup (hwm is installed into /opt by
-default).
+Edit the very simple Makefile to customize the build.
 
-Afterwards enter the following command to build and install hwm:
+At long last, enter the following command to build and install hwm:
 
-    make clean install
+    make install
+
+Wait, why isn't it this easy with all programs?
 
 
 Running hwm
 -----------
-Add the following line to your .xinitrc to start hwm using startx:
+Put this in your .xinitrc/.xsession/wherever hip Linux distros want it:
 
-    exec hwm
+	while true; do
+		<hwm install>/hwm &> /tmp/hwm.log
+		if [ 0 -eq $? ]; then
+			break
+		fi
+	done
 
-In order to display status info in the bar, you can do something like this in
-your .xinitrc:
+In order to display info in the bar instead of seeing the beautiful <hwm> art,
+you can do something like this:
 
-    while true
-    do
-        xsetroot -name "`date` `uptime | sed 's/.*,//'`"
-        sleep 1
-    done &
-    exec hwm
+	while true; do
+		./<scripts directory>/xsetroot.sh
+	done &
+	root_loop_pid=$!
+	<Do the above hwm loop here>
+	kill $root_loop_pid
+
+where the xsetroot.sh script can contain e.g.:
+
+	#!/bin/sh
+	xsetroot -name "`date`"
+	sleep 5
+
+This way you can edit the status text while hwm is running.
+
+If the status string starts with an exclamation mark, hwm will flash the
+status box, useful e.g. for low battery level warning.
 
 
 Configuration
 -------------
-The configuration of hwm is done by creating a custom config.h and compiling
-the source code.
+hwm is configured by editing the source code, the most interesting configs
+have been isolated near the top. Rebuild, install and restart hwm and the new
+configs will be active.
+
+
+I implemented a cool new feature!
+---------------------------------
+Great! I don't want to sound like a jerk, but I don't want it :p
