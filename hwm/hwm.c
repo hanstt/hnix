@@ -234,7 +234,6 @@ action_client_browse(struct Arg const *a_arg)
 	int do_browse;
 
 	(void)a_arg;
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (TAILQ_EMPTY(&g_client_list[g_workspace_cur]) || !(c =
 	    TAILQ_NEXT(TAILQ_FIRST(&g_client_list[g_workspace_cur]), next))) {
 		return;
@@ -287,7 +286,6 @@ action_client_jump(struct Arg const *a_arg)
 	struct Client *c;
 	int new, test;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (!g_focus) {
 		return;
 	}
@@ -332,7 +330,6 @@ action_client_maximize(struct Arg const *a_arg)
 	enum Maximize const c_toggle = a_arg->i;
 	enum Maximize result;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (!g_focus) {
 		return;
 	}
@@ -385,7 +382,6 @@ action_client_move(struct Arg const *a_arg)
 	int dx, dy, do_move;
 
 	(void)a_arg;
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (!g_focus) {
 		return;
 	}
@@ -432,7 +428,6 @@ void
 action_client_relocate(struct Arg const *a_arg)
 {
 	assert(0 <= a_arg->i && WORKSPACE_NUM > a_arg->i);
-printf("%s(%d)\n", __FUNCTION__, a_arg->i); fflush(stdout);
 	if (!g_focus || g_workspace_cur == a_arg->i) {
 		return;
 	}
@@ -449,7 +444,6 @@ action_client_resize(struct Arg const *a_arg)
 	int dx, dy, do_resize;
 
 	(void)a_arg;
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (!g_focus) {
 		return;
 	}
@@ -491,29 +485,12 @@ printf("%s\n", __FUNCTION__); fflush(stdout);
 	    XCB_CURRENT_TIME);
 }
 
-/*void
-action_dump(struct Arg const *a_arg)
-{
-	struct Client *c;
-	size_t i;
-
-	(void)a_arg;
-	for (i = 0; WORKSPACE_NUM > i; ++i) {
-		TAILQ_FOREACH(c, &g_client_list[i], next) {
-			printf("DUMP %d w0x%08x u%d %d+%d,%dx%d\n", (int)i,
-			    c->window, c->is_urgent, c->x,
-			    c->y, c->width, c->height);
-		}
-	}
-}*/
-
 void
 action_exec(struct Arg const *a_arg)
 {
 	pid_t pid;
 	char const *arg0 = ((char const **)a_arg->v)[0];
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (0 > (pid = fork())) {
 		fprintf(stderr, "Could not fork for '%s'.\n", arg0);
 	} else if (0 == pid) {
@@ -530,7 +507,6 @@ action_furnish(struct Arg const *a_arg)
 	int num = 0;
 
 	(void)a_arg;
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
 		c->x += 10000;
 		++num;
@@ -561,7 +537,6 @@ void
 action_kill(struct Arg const *a_arg)
 {
 	(void)a_arg;
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (g_focus) {
 		xcb_icccm_get_wm_protocols_reply_t proto;
 		size_t i;
@@ -598,7 +573,6 @@ void
 action_quit(struct Arg const *a_arg)
 {
 	(void)a_arg;
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	g_run = RUN_QUIT;
 }
 
@@ -606,7 +580,6 @@ void
 action_restart(struct Arg const *a_arg)
 {
 	(void)a_arg;
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	g_run = RUN_RESTART;
 }
 
@@ -615,7 +588,6 @@ action_workspace_select(struct Arg const *a_arg)
 {
 	struct Client *c;
 
-printf("%s(%d->%d)\n", __FUNCTION__, g_workspace_cur, a_arg->i); fflush(stdout);
 	assert(0 <= a_arg->i && WORKSPACE_NUM > a_arg->i);
 	if (g_workspace_cur == a_arg->i) {
 		return;
@@ -748,10 +720,10 @@ client_add_details(xcb_window_t a_window, int const *a_data)
 	if (0 > a_data[0]) {
 		workspace = g_workspace_cur;
 		c->is_urgent = 0;
-		c->y = c->x = 0;
 		c->maximize = MAX_NOPE;
 		c->max_old_y = c->max_old_x = 0;
 		c->max_old_height = c->max_old_width = 0;
+		client_place(c);
 	} else {
 		workspace = a_data[0];
 		c->is_urgent = a_data[1];
@@ -1122,7 +1094,6 @@ event_button_press(xcb_generic_event_t const *a_event)
 	enum Click click = CLICK_ROOT;
 	size_t i;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (ev->event == g_bar) {
 		int x = 0;
 
@@ -1159,7 +1130,6 @@ event_configure_notify(xcb_generic_event_t const *a_event)
 	    const *)a_event;
 	struct Client *c;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	c = client_get(ev->window, NULL);
 	if (ev->override_redirect && c) {
 		client_delete(c);
@@ -1178,7 +1148,6 @@ event_configure_request(xcb_generic_event_t const *a_event)
 	uint16_t mask;
 	int workspace;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if ((c = client_get(ev->window, &workspace))) {
 		if (XCB_CONFIG_WINDOW_X & ev->value_mask) {
 			c->x = ev->x;
@@ -1230,7 +1199,6 @@ event_destroy_notify(xcb_generic_event_t const *a_event)
 	    const *)a_event;
 	struct Client *c;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if ((c = client_get(ev->window, NULL))) {
 		client_delete(c);
 	}
@@ -1244,7 +1212,6 @@ event_enter_notify(xcb_generic_event_t const *a_event)
 	struct Client *c;
 	int workspace;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if ((c = client_get(ev->event, &workspace)) && g_workspace_cur ==
 	    workspace) {
 		client_focus(c, 1, 0);
@@ -1256,7 +1223,6 @@ event_expose(xcb_generic_event_t const *a_event)
 {
 	xcb_expose_event_t const *ev = (xcb_expose_event_t const *)a_event;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (0 == ev->count && ev->window == g_bar) {
 		bar_draw();
 	}
@@ -1267,11 +1233,9 @@ event_handle(xcb_generic_event_t const *a_event)
 {
 	size_t i = XCB_EVENT_RESPONSE_TYPE(a_event);
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (EVENT_MAX > i && g_event_handler[i]) {
 		g_event_handler[i](a_event);
 	} else {
-printf("generic(0x%x)\n", a_event->response_type); fflush(stdout);
 	}
 }
 
@@ -1283,7 +1247,6 @@ event_key_press(xcb_generic_event_t const *a_event)
 	struct KeyBind *bind;
 	size_t i;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	for (i = 0, bind = c_key_bind; LENGTH(c_key_bind) > i; ++i, ++bind) {
 		if (bind->code == ev->detail && bind->state == ev->state) {
 			bind->action(&bind->arg);
@@ -1298,7 +1261,6 @@ event_map_request(xcb_generic_event_t const *a_event)
 	    *)a_event;
 	struct Client *c;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	xcb_map_window(g_conn, ev->window);
 	if ((c = (c = client_get(ev->window, NULL)) ? c :
 	    client_add(ev->window))) {
@@ -1312,7 +1274,6 @@ event_property_notify(xcb_generic_event_t const *a_event)
 	xcb_property_notify_event_t const *ev = (xcb_property_notify_event_t
 	    const *)a_event;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if (ev->window == g_root) {
 		if (XCB_ATOM_WM_NAME == ev->atom) {
 			root_name_update();
@@ -1321,7 +1282,6 @@ printf("%s\n", __FUNCTION__); fflush(stdout);
 	} else {
 		struct Client *c;
 
-		printf("property notify = %d\n", ev->atom);
 		if ((c = client_get(ev->window, NULL))) {
 			if (XCB_ATOM_WM_HINTS == ev->atom) {
 				xcb_icccm_wm_hints_t hints;
@@ -1329,8 +1289,6 @@ printf("%s\n", __FUNCTION__); fflush(stdout);
 				if (xcb_icccm_get_wm_hints_reply(g_conn,
 				    xcb_icccm_get_wm_hints(g_conn,
 				    ev->window), &hints, NULL)) {
-					printf("  Flags = %0x\n",
-					    hints.flags);
 					if ((XCB_ICCCM_WM_HINT_X_URGENCY &
 					    hints.flags) && g_focus != c) {
 						c->is_urgent = 1;
@@ -1355,7 +1313,6 @@ event_unmap_notify(xcb_generic_event_t const *a_event)
 {
 	struct Client *c;
 
-printf("%s\n", __FUNCTION__); fflush(stdout);
 	if ((c = client_get(((xcb_unmap_notify_event_t const
 	    *)a_event)->window, NULL))) {
 		client_delete(c);
@@ -1463,19 +1420,16 @@ main()
 		    strlen(c_workspace_label[i]));
 	}
 
-	g_conn = xcb_connect(NULL, &screen_no);
-	if (!g_conn) {
+	if (!(g_conn = xcb_connect(NULL, &screen_no))) {
 		die("NULL X11 connection.");
 	}
-	error = xcb_connection_has_error(g_conn);
-	if (0 != error) {
+	if ((error = xcb_connection_has_error(g_conn))) {
 		die("X11 connection error=%d.", error);
 	}
 	for (it = xcb_setup_roots_iterator(xcb_get_setup(g_conn)); 0 <
 	    screen_no--; xcb_screen_next(&it))
 		;
-	g_screen = it.data;
-	if (!g_screen) {
+	if (!(g_screen = it.data)) {
 		die("Could not get current screen.");
 	}
 	g_width = g_screen->width_in_pixels;
@@ -1518,9 +1472,8 @@ main()
 	/* Graphics. */
 	g_font = xcb_generate_id(g_conn);
 	xcb_open_font(g_conn, g_font, 5, FONT_FACE);
-	font_reply = xcb_query_font_reply(g_conn, xcb_query_font(g_conn,
-	    g_font), NULL);
-	if (!font_reply) {
+	if (!(font_reply = xcb_query_font_reply(g_conn, xcb_query_font(g_conn,
+	    g_font), NULL))) {
 		die("Could not load font face '%s'.", FONT_FACE);
 	}
 	g_font_ascent = font_reply->font_ascent;
@@ -1554,9 +1507,8 @@ main()
 	}
 
 	/* Furnish existing windows, and reuse persisted info. */
-	tree_reply = xcb_query_tree_reply(g_conn, xcb_query_tree(g_conn,
-	    g_root), NULL);
-	if (tree_reply) {
+	if ((tree_reply = xcb_query_tree_reply(g_conn, xcb_query_tree(g_conn,
+	    g_root), NULL))) {
 		char line[80], *p;
 		int j[10];
 		xcb_window_t *w;
@@ -1584,7 +1536,7 @@ main()
 			fclose(file);
 		}
 		for (i = 0; num > i; ++i) {
-			if (!client_get(w[i], NULL)) {
+			if (w[i] && !client_get(w[i], NULL)) {
 				client_add(w[i]);
 			}
 		}
