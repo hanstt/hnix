@@ -2,7 +2,7 @@ PREFIX=~/opt
 
 CC=cc
 
-CFLAGS:=-ansi -ggdb -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wuninitialized
+CFLAGS:=-ansi -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wuninitialized
 LDFLAGS:=`pkg-config xcb-icccm --libs`
 
 all: hwm
