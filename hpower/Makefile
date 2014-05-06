@@ -1,9 +1,14 @@
 PREFIX?=~/opt
 
-all:
-	gcc -O2 main.c -o dacpi
+all: hpower
+
+hpower: main.c
+	gcc -ggdb -O2 -pedantic-errors -Wall -Werror -Wextra $< -o $@
 
 install:
 	mkdir -p $(PREFIX)/bin
-	cp -f dacpi $(PREFIX)/bin
-	chmod 755 $(PREFIX)/bin/dacpi
+	cp -f hpower $(PREFIX)/bin
+	chmod 755 $(PREFIX)/bin/hpower
+
+clean:
+	rm -f hpower

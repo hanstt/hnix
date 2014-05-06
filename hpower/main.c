@@ -1,8 +1,9 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#define AC "/proc/acpi/ac_adapter/ADP1/"
-#define BAT "/proc/acpi/battery/BAT1/"
+#define AC "/sys/class/power_supply/ACAD/"
+#define BAT "/sys/class/power_supply/BAT1/"
 
 enum {
 	TYPE_NONE,
@@ -14,67 +15,82 @@ int
 main(int argc, char **argv)
 {
 	char line[80];
+	char status[80];
 	FILE *file;
 	int type = TYPE_NONE;
 	int capacity = 0;
-	int rate = 0;
-	int remain = 0;
+	int now = 0;
 	int percentage = 0;
 	int percentageMin = 0;
+	int rate = 0;
+	int remain = 0;
 
-	if ((file = fopen(AC"state", "r")) != NULL) {
+	if ((file = fopen(AC"uevent", "rb")) != NULL) {
 		while (fgets(line, 80, file) != NULL) {
-			if (strstr(line, "on-line")) {
-				type = TYPE_AC;
-				break;
-			}
-			if (strstr(line, "off-line")) {
-				type = TYPE_BAT;
+			if (0 == strncmp("POWER_SUPPLY_ONLINE=", line, 20)) {
+				type = '0' == line[20] ? TYPE_BAT : TYPE_AC;
 				break;
 			}
 		}
 		fclose(file);
 	}
 	if (type == TYPE_NONE) {
-		puts("No ACPI");
+		puts("No AC ACPI");
 		return 0;
 	}
 
-	if ((file = fopen(BAT"info", "r")) != NULL) {
-		while (fgets(line, 80, file) != NULL)
-			if (strstr(line, "design capacity:")) {
-				capacity = strtol(line + 16, NULL, 10);
-				break;
-			}
-		fclose(file);
-	}
-
-	if ((file = fopen(BAT"state", "r")) != NULL) {
+	if ((file = fopen(BAT"uevent", "r")) != NULL) {
 		while (fgets(line, 80, file) != NULL) {
-			if (strstr(line, "present rate:"))
-				rate = strtol(line + 13, NULL, 10);
-			if (strstr(line, "remaining capacity:"))
-				remain = strtol(line + 19, NULL, 10);
+			if (!strncmp("POWER_SUPPLY_STATUS=", line, 20)) {
+				strcpy(status, line + 20);
+				continue;
+			}
+			if (!strncmp("POWER_SUPPLY_POWER_NOW=", line, 23)) {
+				rate = strtol(line + 23, NULL, 10);
+				continue;
+			}
+			if (!strncmp("POWER_SUPPLY_CURRENT_NOW=", line, 25)) {
+				rate = strtol(line + 25, NULL, 10);
+				continue;
+			}
+			if (!strncmp("POWER_SUPPLY_CHARGE_FULL=", line, 25)) {
+				capacity = strtol(line + 25, NULL, 10);
+				continue;
+			}
+			if (!strncmp("POWER_SUPPLY_ENERGY_FULL=", line, 25)) {
+				capacity = strtol(line + 25, NULL, 10);
+				continue;
+			}
+			if (!strncmp("POWER_SUPPLY_CHARGE_NOW=", line, 24)) {
+				now = strtol(line + 24, NULL, 10);
+				continue;
+			}
+			if (!strncmp("POWER_SUPPLY_ENERGY_NOW=", line, 24)) {
+				now = strtol(line + 24, NULL, 10);
+				continue;
+			}
 		}
 		fclose(file);
 	}
 
-	if (capacity > 0) {
-		percentage = 100 * remain / capacity;
-		if (type == TYPE_BAT) {
-			if (argc > 1)
-				percentageMin = strtol(argv[1]);
-			if (percentageMin < 15)
-				percentageMin = 15;
-			if (percentage <= percentageMin)
-				printf("!");
-		}
+	percentage = now / (capacity / 100);
+	if (TYPE_BAT == type) {
+		if (argc > 1)
+			percentageMin = strtol(argv[1], NULL, 10);
+		if (percentageMin < 5)
+			percentageMin = 5;
+		if (percentage <= percentageMin)
+			printf("!");
+		printf("Bat");
+		remain = now;
+	} else {
+		printf("AC");
+		remain = capacity - now;
 	}
-	printf("%s", type == TYPE_AC ? "AC" : "Bat");
-	if (percentage > 0)
-		printf(" %d%%", percentage);
-	if (type == TYPE_BAT && rate > 0)
-		printf(" %dh %dmin", remain / rate, 60 * remain / rate % 60);
-	puts("");
+	printf(" %d%%", percentage);
+	if (0 != rate) {
+		printf(" (%d:%02d)\n", remain / rate, remain / (rate / 60) %
+		    60);
+	}
 	return 0;
 }
