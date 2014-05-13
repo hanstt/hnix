@@ -48,7 +48,7 @@
 #define WIDTH(c) (1 + (c)->width + 1)
 
 enum Click { CLICK_ROOT, CLICK_WORKSPACE, CLICK_STATUS, CLICK_CLIENT };
-enum JumpDirection { JUMP_EAST, JUMP_NORTH, JUMP_WEST, JUMP_SOUTH };
+enum JumpDirection { DIR_EAST, DIR_NORTH, DIR_WEST, DIR_SOUTH };
 enum Maximize { MAX_NOPE, MAX_BOTH, MAX_VERT };
 enum RunControl { RUN_LOOP, RUN_QUIT, RUN_RESTART };
 enum Visibility { VISIBLE, HIDDEN };
@@ -88,6 +88,8 @@ struct KeyBind {
 };
 
 static void		action_client_browse(struct Arg const *);
+static void		action_client_expand(struct Arg const *);
+static void		action_client_grow(struct Arg const *);
 static void		action_client_jump(struct Arg const *);
 static void		action_client_maximize(struct Arg const *);
 static void		action_client_move(struct Arg const *);
@@ -146,6 +148,7 @@ static int		text_width(struct String const *);
 #define FONT_FACE "fixed"
 #define MOD_MASK1 XCB_MOD_MASK_4
 #define MOD_MASK2 (XCB_MOD_MASK_1 | XCB_MOD_MASK_4)
+#define MOD_MASK3 (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_4)
 #define OVERLAP_FUDGE 10
 #define PERSIST_FILE "/tmp/hwm.txt"
 #define SNAP_MARGIN 6
@@ -160,26 +163,27 @@ static char const *c_workspace_label[WORKSPACE_NUM] = {
 static char const *c_uxterm[] = {"uxterm", NULL};
 static char const *c_dmenu[] = { "dmenu_run", "-i", "-fn", FONT_FACE, "-nb",
 	BAR_BG, "-nf", BAR_FG, "-sb", BAR_FG, "-sf", BAR_BG, NULL};
+#define BIND_WORKSPACE(code, id) \
+	{code, MOD_MASK1, action_workspace_select, {id, NULL}},\
+	{code, MOD_MASK2, action_client_relocate, {id, NULL}}
+#define BIND_CLIENT_DIR(code, dir) \
+	{code, MOD_MASK1, action_client_jump, {dir, NULL}},\
+	{code, MOD_MASK2, action_client_expand, {dir, NULL}},\
+	{code, MOD_MASK3, action_client_grow, {dir, NULL}}
 static struct KeyBind c_key_bind[] = {
 	{24, MOD_MASK2, action_quit, {0, NULL}},
 	{38, MOD_MASK2, action_restart, {0, NULL}},
 	{53, MOD_MASK2, action_kill, {0, NULL}},
-	{25, MOD_MASK1, action_workspace_select, {0, NULL}},
-	{26, MOD_MASK1, action_workspace_select, {1, NULL}},
-	{27, MOD_MASK1, action_workspace_select, {2, NULL}},
-	{39, MOD_MASK1, action_workspace_select, {3, NULL}},
-	{40, MOD_MASK1, action_workspace_select, {4, NULL}},
-	{41, MOD_MASK1, action_workspace_select, {5, NULL}},
-	{25, MOD_MASK2, action_client_relocate, {0, NULL}},
-	{26, MOD_MASK2, action_client_relocate, {1, NULL}},
-	{27, MOD_MASK2, action_client_relocate, {2, NULL}},
-	{39, MOD_MASK2, action_client_relocate, {3, NULL}},
-	{40, MOD_MASK2, action_client_relocate, {4, NULL}},
-	{41, MOD_MASK2, action_client_relocate, {5, NULL}},
-	{111, MOD_MASK1, action_client_jump, {JUMP_NORTH, NULL}},
-	{113, MOD_MASK1, action_client_jump, {JUMP_WEST, NULL}},
-	{114, MOD_MASK1, action_client_jump, {JUMP_EAST, NULL}},
-	{116, MOD_MASK1, action_client_jump, {JUMP_SOUTH, NULL}},
+	BIND_WORKSPACE(25, 0),
+	BIND_WORKSPACE(26, 1),
+	BIND_WORKSPACE(27, 2),
+	BIND_WORKSPACE(39, 3),
+	BIND_WORKSPACE(40, 4),
+	BIND_WORKSPACE(41, 5),
+	BIND_CLIENT_DIR(111, DIR_NORTH),
+	BIND_CLIENT_DIR(113, DIR_WEST),
+	BIND_CLIENT_DIR(114, DIR_EAST),
+	BIND_CLIENT_DIR(116, DIR_SOUTH),
 	{65, MOD_MASK1, action_client_maximize, {MAX_BOTH, NULL}},
 	{65, MOD_MASK2, action_client_maximize, {MAX_VERT, NULL}},
 	{23, MOD_MASK1, action_client_browse, {0, NULL}},
@@ -281,6 +285,67 @@ action_client_browse(struct Arg const *a_arg)
 }
 
 void
+action_client_expand(struct Arg const *a_arg)
+{
+	struct Client *c;
+	int new, test;
+
+	if (!g_focus) {
+		return;
+	}
+	switch (a_arg->i) {
+		case DIR_EAST: new = g_width - g_focus->x - 2; break;
+		case DIR_NORTH: return;
+		case DIR_WEST: return;
+		case DIR_SOUTH: new = g_height - g_focus->y - 2; break;
+		default: abort();
+	}
+	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
+		if (g_focus == c) {
+			continue;
+		}
+		switch (a_arg->i) {
+			case DIR_EAST:
+				test = c->x - g_focus->x - 2;
+				CONVERGE(<, WIDTH(g_focus), test, new);
+				break;
+			case DIR_NORTH:
+			case DIR_WEST:
+				break;
+			case DIR_SOUTH:
+				test = c->y - g_focus->y - 2;
+				CONVERGE(<, HEIGHT(g_focus), test, new);
+				break;
+		}
+	}
+	(DIR_EAST == a_arg->i || DIR_WEST == a_arg->i) ? (g_focus->width =
+	    new) : (g_focus->height = new);
+	client_resize(g_focus, 0);
+}
+
+void
+action_client_grow(struct Arg const *a_arg)
+{
+	int incx = 1, incy = 1;
+
+	if (!g_focus) {
+		return;
+	}
+	if (XCB_ICCCM_SIZE_HINT_P_RESIZE_INC & g_focus->hints.flags) {
+		incx = g_focus->hints.width_inc;
+		incy = g_focus->hints.height_inc;
+	}
+	switch (a_arg->i) {
+		case DIR_EAST: g_focus->width += incx; break;
+		case DIR_NORTH: g_focus->height -= incy; break;
+		case DIR_WEST: g_focus->width -= incx; break;
+		case DIR_SOUTH: g_focus->height += incy; break;
+		default: abort();
+	}
+	client_resize(g_focus, 0);
+}
+
+void
 action_client_jump(struct Arg const *a_arg)
 {
 	struct Client *c;
@@ -290,10 +355,10 @@ action_client_jump(struct Arg const *a_arg)
 		return;
 	}
 	switch (a_arg->i) {
-		case JUMP_EAST: new = g_width - WIDTH(g_focus); break;
-		case JUMP_NORTH: new = g_font_height; break;
-		case JUMP_WEST: new = 0; break;
-		case JUMP_SOUTH: new = g_height - HEIGHT(g_focus); break;
+		case DIR_EAST: new = g_width - WIDTH(g_focus); break;
+		case DIR_NORTH: new = g_font_height; break;
+		case DIR_WEST: new = 0; break;
+		case DIR_SOUTH: new = g_height - HEIGHT(g_focus); break;
 		default: abort();
 	}
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
@@ -301,27 +366,29 @@ action_client_jump(struct Arg const *a_arg)
 			continue;
 		}
 		switch (a_arg->i) {
-			case JUMP_EAST:
+			case DIR_EAST:
 				test = c->x - WIDTH(g_focus);
 				CONVERGE(<, g_focus->x, test, new);
 				break;
-			case JUMP_NORTH:
+			case DIR_NORTH:
 				test = c->y + HEIGHT(c);
 				CONVERGE(>, g_focus->y, test, new);
 				break;
-			case JUMP_WEST:
+			case DIR_WEST:
 				test = c->x + WIDTH(c);
 				CONVERGE(>, g_focus->x, test, new);
 				break;
-			case JUMP_SOUTH:
+			case DIR_SOUTH:
 				test = c->y - HEIGHT(g_focus);
 				CONVERGE(<, g_focus->y, test, new);
 				break;
 		}
 	}
-	(JUMP_EAST == a_arg->i || JUMP_WEST == a_arg->i) ? (g_focus->x = new)
+	(DIR_EAST == a_arg->i || DIR_WEST == a_arg->i) ? (g_focus->x = new)
 	    : (g_focus->y = new);
 	client_move(g_focus, VISIBLE);
+	xcb_warp_pointer(g_conn, XCB_NONE, g_focus->window, 0, 0, 0, 0,
+	    g_focus->width / 2, g_focus->height / 2);
 }
 
 void
@@ -345,6 +412,7 @@ action_client_maximize(struct Arg const *a_arg)
 			result = MAX_BOTH == c_toggle ? MAX_NOPE : MAX_VERT;
 			break;
 		case MAX_VERT:
+			g_focus->max_old_x = g_focus->x;
 			result = MAX_VERT == c_toggle ? MAX_NOPE : MAX_BOTH;
 			break;
 		default:
