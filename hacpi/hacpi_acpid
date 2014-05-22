@@ -1,0 +1,2 @@
+event=.*
+action=/opt/bin/hacpi_events.sh %e
