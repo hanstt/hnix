@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Polls and emulates some "missing" ACPI events, plus performs some actions.
+# Polls and emulates "missing" ACPI events, plus performs some actions.
 
 ac_path=/sys/class/power_supply/ACAD
 bat_path=/sys/class/power_supply/BAT1
@@ -23,7 +23,7 @@ do
 		status=`cat $bat_path/status`
 		if [ "Discharging" == $status ]
 		then
-			/opt/bin/acpi_hibernate
+			/opt/bin/hacpi_hibernate.sh
 		fi
 	fi
 

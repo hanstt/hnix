@@ -1,7 +1,19 @@
 PREFIX?=/opt
 
+BINS=hacpi_cron.sh \
+     hacpi_ctrl.sh \
+     hacpi_daemon.sh \
+     hacpi_events.sh \
+     hacpi_hibernate.sh \
+     hacpi_powersave.sh \
+     hacpi_sleep.sh
+CFGS=hacpi_acpid
+
 install:
 	mkdir -p $(PREFIX)/bin
-	cp -f hacpi_*.sh $(PREFIX)/bin
-	chmod 755 $(PREFIX)/bin/hacpi_*.sh
-	cp -f hacpi_acpid /etc/acpi/events
+	cp -f $(BINS) $(PREFIX)/bin
+	chmod 755 $(addprefix $(PREFIX)/bin/,$(BINS))
+	cp -f $(CFGS) /etc/acpi/events
+
+clean:
+	rm -f $(addprefix $(PREFIX)/bin/,$(BINS)) $(addprefix /etc/acpi/events/,$(CFGS))
