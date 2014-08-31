@@ -11,7 +11,7 @@ echo 1500 > /proc/sys/vm/dirty_writeback_centisecs
 ethtool -s eth0 wol d
 rfkill block bluetooth
 rfkill block wwan
-iw dev wlan0 set power_save on
+#iw dev wlan0 set power_save on
 
 for i in `find /sys -path "*power/control"`
 do
