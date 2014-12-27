@@ -23,7 +23,7 @@ do
 		status=`cat $bat_path/status`
 		if [ "Discharging" == $status ]
 		then
-			/opt/bin/hacpi_hibernate.sh
+			hacpi_hibernate.sh
 		fi
 	fi
 

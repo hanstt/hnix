@@ -22,8 +22,10 @@
 #include <sys/queue.h>
 #include <sys/time.h>
 #include <assert.h>
+#include <err.h>
 #include <iconv.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,7 +117,6 @@ static void		action_exec(struct Arg const *);
 static void		action_furnish(struct Arg const *);
 static void		action_kill(struct Arg const *);
 static void		action_quit(struct Arg const *);
-static void		action_restart(struct Arg const *);
 static void		action_workspace_select(struct Arg const *);
 static xcb_atom_t	atom_get(char const *);
 static void		bar_draw(void);
@@ -187,8 +188,8 @@ static char const *c_dmenu[] = { "dmenu_run", "-i", "-fn", FONT_FACE, "-nb",
 	{code, MOD_MASK2, action_client_expand, {dir, NULL}},\
 	{code, MOD_MASK3, action_client_grow, {dir, NULL}}
 static struct KeyBind c_key_bind[] = {
-	{24, MOD_MASK2, action_quit, {0, NULL}},
-	{38, MOD_MASK2, action_restart, {0, NULL}},
+	{24, MOD_MASK2, action_quit, {RUN_QUIT, NULL}},
+	{38, MOD_MASK2, action_quit, {RUN_RESTART, NULL}},
 	{53, MOD_MASK2, action_kill, {0, NULL}},
 	BIND_WORKSPACE(25, 0),
 	BIND_WORKSPACE(26, 1),
@@ -233,7 +234,7 @@ static xcb_atom_t g_WM_DELETE_WINDOW, g_WM_PROTOCOLS;
 static xcb_atom_t g_NET_WM_NAME;
 static xcb_cursor_t g_cursor_normal, g_cursor_move, g_cursor_resize;
 static xcb_window_t g_bar;
-static int g_bar_redraw;
+static int g_do_bar_redraw;
 static uint32_t g_color_border_focus, g_color_border_unfocus;
 static uint32_t g_color_bar_bg, g_color_bar_fg;
 static uint32_t g_color_urgent1_bg, g_color_urgent1_fg;
@@ -575,12 +576,13 @@ action_exec(struct Arg const *a_arg)
 	pid_t pid;
 	char const *arg0 = ((char const **)a_arg->v)[0];
 
-	if (0 > (pid = fork())) {
-		fprintf(stderr, "Could not fork for '%s'.\n", arg0);
+	pid = fork();
+	if (0 > pid) {
+		warn("Could not fork for '%s'", arg0);
 	} else if (0 == pid) {
 		execvp(arg0, a_arg->v);
-		fprintf(stderr, "Failed to exec '%s'.\n", arg0);
-		_exit(0);
+		warn("Failed to exec '%s'", arg0);
+		_exit(EXIT_FAILURE);
 	}
 }
 
@@ -656,15 +658,7 @@ action_kill(struct Arg const *a_arg)
 void
 action_quit(struct Arg const *a_arg)
 {
-	(void)a_arg;
-	g_run = RUN_QUIT;
-}
-
-void
-action_restart(struct Arg const *a_arg)
-{
-	(void)a_arg;
-	g_run = RUN_RESTART;
+	g_run = a_arg->i;
 }
 
 void
@@ -889,7 +883,7 @@ client_focus(struct Client *a_client, int a_do_reorder, int a_do_raise)
 		xcb_set_input_focus(g_conn, XCB_INPUT_FOCUS_POINTER_ROOT,
 		    g_focus->window, XCB_CURRENT_TIME);
 	}
-	g_bar_redraw = 1;
+	g_do_bar_redraw = 1;
 }
 
 struct Client *
@@ -1361,7 +1355,7 @@ event_property_notify(xcb_generic_event_t const *a_event)
 	if (ev->window == g_root) {
 		if (XCB_ATOM_WM_NAME == ev->atom) {
 			root_name_update();
-			g_bar_redraw = 1;
+			g_do_bar_redraw = 1;
 		}
 	} else {
 		struct Client *c;
@@ -1376,7 +1370,7 @@ event_property_notify(xcb_generic_event_t const *a_event)
 					if ((XCB_ICCCM_WM_HINT_X_URGENCY &
 					    hints.flags) && g_focus != c) {
 						c->is_urgent = 1;
-						g_bar_redraw = 1;
+						g_do_bar_redraw = 1;
 					}
 				}
 			} else if (XCB_ATOM_WM_NORMAL_HINTS == ev->atom) {
@@ -1386,7 +1380,7 @@ event_property_notify(xcb_generic_event_t const *a_event)
 			} else if (g_NET_WM_NAME == ev->atom ||
 			    XCB_ATOM_WM_NAME == ev->atom) {
 				client_name_update(c);
-				g_bar_redraw = 1;
+				g_do_bar_redraw = 1;
 			}
 		}
 	}
@@ -1496,6 +1490,9 @@ main()
 	int screen_no, error;
 
 	/* Basic setup. */
+	if (SIG_ERR == signal(SIGCHLD, SIG_IGN)) {
+		err(EXIT_FAILURE, "SIGCHLD=SIG_IGN failed");
+	}
 	if ((iconv_t)-1 == (g_iconv = iconv_open("UCS-2BE", "UTF8"))) {
 		die("Could not open iconv(UCS-2BE, UTF8).");
 	}
@@ -1601,6 +1598,10 @@ main()
 		w = xcb_query_tree_children(tree_reply);
 		num = xcb_query_tree_children_length(tree_reply);
 		if ((file = fopen(PERSIST_FILE, "rb"))) {
+			fgets(line, 80, file);
+			g_workspace_cur = strtol(line, NULL, 10);
+			g_workspace_cur = MAX(0, g_workspace_cur);
+			g_workspace_cur = MIN(WORKSPACE_NUM, g_workspace_cur);
 			while (fgets(line, 80, file)) {
 				for (p = strtok(line, " "), i = 0; p && 10 >
 				    i; p = strtok(NULL, " "), ++i) {
@@ -1653,7 +1654,7 @@ main()
 		xcb_generic_event_t *ev;
 
 		poll(&fds, 1, g_timeout);
-		g_bar_redraw = 0;
+		g_do_bar_redraw = 0;
 		while ((ev = xcb_poll_for_event(g_conn))) {
 			event_handle(ev);
 			xcb_flush(g_conn);
@@ -1671,13 +1672,13 @@ main()
 			if (0 >= g_timeout) {
 				g_timeout = TIMEOUT_BLINK;
 				g_blink ^= 1;
-				g_bar_redraw = 1;
+				g_do_bar_redraw = 1;
 			}
 		} else {
 			g_timeout = TIMEOUT_NORMAL;
 			g_blink = 0;
 		}
-		if (g_bar_redraw) {
+		if (g_do_bar_redraw) {
 			bar_draw();
 			xcb_flush(g_conn);
 		}
@@ -1687,28 +1688,35 @@ main()
 	xcb_destroy_window(g_conn, g_bar);
 	if (RUN_RESTART == g_run) {
 		file = fopen(PERSIST_FILE, "wb");
-		for (i = 0; WORKSPACE_NUM > i; ++i) {
-			while (!TAILQ_EMPTY(&g_client_list[i])) {
-				struct Client *c;
+		if (NULL == file) {
+			err(EXIT_FAILURE, "Could not save persist info");
+		} else {
+			fprintf(file, "%d\n", g_workspace_cur);
+			for (i = 0; WORKSPACE_NUM > i; ++i) {
+				while (!TAILQ_EMPTY(&g_client_list[i])) {
+					struct Client *c;
 
-				c = TAILQ_FIRST(&g_client_list[i]);
-				fprintf(file, "%d %d %d %d %d %d %d %d %d "
-				    "%d\n", c->window, (int)i, c->is_urgent,
-				    c->x, c->y, c->maximize, c->max_old_x,
-				    c->max_old_y, c->max_old_width,
-				    c->max_old_height);
-				TAILQ_REMOVE(&g_client_list[i], c, next);
-				client_delete(c);
+					c = TAILQ_FIRST(&g_client_list[i]);
+					fprintf(file, "%d %d %d %d %d %d %d "
+					    "%d %d %d\n", c->window, (int)i,
+					    c->is_urgent, c->x, c->y,
+					    c->maximize, c->max_old_x,
+					    c->max_old_y, c->max_old_width,
+					    c->max_old_height);
+					TAILQ_REMOVE(&g_client_list[i], c,
+					    next);
+					client_delete(c);
+				}
 			}
+			fclose(file);
 		}
-		fclose(file);
 	} else {
-		remove(PERSIST_FILE);
+/*		remove(PERSIST_FILE);*/
 	}
 	xcb_flush(g_conn);
 	xcb_disconnect(g_conn);
 
 	iconv_close(g_iconv);
 
-	return RUN_RESTART == g_run;
+	exit(RUN_RESTART == g_run);
 }

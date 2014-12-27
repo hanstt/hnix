@@ -2,7 +2,8 @@
 
 # Does a bunch of things to save money.
 
-echo 80 > /sys/class/backlight/acpi_video0/brightness
+max_brightness=`cat /sys/class/backlight/intel_backlight/max_brightness`
+echo "$max_brightness*0.8/1" | bc > /sys/class/backlight/intel_backlight/brightness
 
 echo 5 > /proc/sys/vm/laptop_mode
 echo 1 > /sys/module/snd_hda_intel/parameters/power_save

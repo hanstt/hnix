@@ -1,3 +1,3 @@
 #!/bin/sh
 
-/opt/bin/acpi_ctrl.sh mem
+hacpi_ctrl.sh mem
