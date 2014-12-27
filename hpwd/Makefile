@@ -1,14 +1,21 @@
 PREFIX?=~/opt
 
-all:
-	gcc -O2 main.c -o pwdparse
+.PHONY: all
+all: hpwd
 
-clean:
-	rm -f pwdparse
+hpwd: main.c
+	gcc -O2 -pedantic-errors -Wall -Werror -Wextra -Wshadow $< -o $@
 
+.PHONY: install
 install:
 	mkdir -p $(PREFIX)/bin
-	cp pwdparse $(PREFIX)/bin
+	cp -f hpwd $(PREFIX)/bin
+	chmod 755 $(PREFIX)/bin/hpwd
 
+.PHONY: uninstall
 uninstall:
-	rm -f $(PREFIX)/bin/pwdparse
+	rm -f $(PREFIX)/bin/hpwd
+
+.PHONY: clean
+clean:
+	rm -f hpwd
