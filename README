@@ -1,0 +1,33 @@
+
+  Hans' Linux things
+ ====================
+
+A small collection of small scripts and programs that I have written to make
+life really comfortable. As long as one uses a reasonable distro like
+Slackware, otherwise eternal misery and pain shall forever... You get the
+idea.
+
+  hacpi
+ -------
+
+ACPI scripts for handling ACPI thingamajigs, events and polling, for when
+events don't work, mainly in order to save battery time.
+
+  hpower
+ --------
+
+A little program to fetch and print the AC and battery status to stdout.
+
+  hpwd
+ ------
+
+Fetches the present working directory and prints it with up to at most 2
+directories. Handles ~, / etc in a reasonable manner. Useful for the bash
+prompt, e.g.:
+ PS1="\u@\h:\$(~/opt/bin/hpwd)\$"
+
+  hwm
+ -----
+
+My little xcb-based window manager. Has its own README, because although I do
+what I can to keep it simple and small, it is still large. Figures.
