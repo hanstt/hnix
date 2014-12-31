@@ -1,9 +1,13 @@
+#include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define AC "/sys/class/power_supply/ACAD/"
-#define BAT "/sys/class/power_supply/BAT1/"
+#define PATH_PS "/sys/class/power_supply"
+#define MATCH(name) 0 == strncmp(name, buf, sizeof(name) - 1)
+#define STRTOL(p) strtol(p, NULL, 10)
+#define SYSFSFIND(dir, name) sysfsfind(dir, name, sizeof name - 1)
 
 enum {
 	TYPE_NONE,
@@ -11,76 +15,132 @@ enum {
 	TYPE_BAT
 };
 
+static char	*sysfsfind(DIR *, char const *, size_t);
+
+char *
+sysfsfind(DIR *const a_dir, char const *const a_type, size_t const a_type_len)
+{
+	for (;;) {
+		char type_path[256];
+		FILE *file;
+		struct dirent *dirent;
+
+		errno = 0;
+		dirent = readdir(a_dir);
+		if (NULL == dirent) {
+			if (0 != errno) {
+				printf("ACPI readddir (%s)\n",
+				    strerror(errno));
+				exit(0);
+			}
+			break;
+		}
+		snprintf(type_path, sizeof type_path, PATH_PS"/%s/type",
+		    dirent->d_name);
+		file = fopen(type_path, "rb");
+		if (NULL != file) {
+			char line[80];
+
+			while (fgets(line, sizeof line, file) != NULL) {
+				if (0 == strncmp(a_type, line, a_type_len)) {
+					fclose(file);
+					return strdup(dirent->d_name);
+				}
+			}
+			fclose(file);
+		}
+	}
+	return NULL;
+}
+
 int
 main(int argc, char **argv)
 {
-	char line[80];
-	char status[80];
+	char buf[256];
 	FILE *file;
-	int type = TYPE_NONE;
-	int capacity = 0;
-	int now = 0;
-	int percentage = 0;
-	int percentageMin = 0;
-	int rate = 0;
-	int remain = 0;
+	DIR *dir;
+	char *path;
+	int capacity, now, percentage, percentage_min, rate, remain, type;
 
-	if ((file = fopen(AC"uevent", "rb")) != NULL) {
-		while (fgets(line, 80, file) != NULL) {
-			if (0 == strncmp("POWER_SUPPLY_ONLINE=", line, 20)) {
-				type = '0' == line[20] ? TYPE_BAT : TYPE_AC;
+	type = TYPE_NONE;
+	capacity = 0;
+	now = 0;
+	rate = 0;
+
+	dir = opendir(PATH_PS);
+	if (NULL == dir) {
+		printf("No PS sysfs (%s)\n", strerror(errno));
+		return 0;
+	}
+	path = SYSFSFIND(dir, "Mains");
+	if (NULL == path) {
+		printf("No AC");
+		closedir(dir);
+		return 0;
+	}
+	snprintf(buf, sizeof buf, PATH_PS"/%s/uevent", path);
+	free(path);
+	file = fopen(buf, "rb");
+	if (NULL != file) {
+		while (fgets(buf, sizeof buf, file) != NULL) {
+			if (0 == strncmp("POWER_SUPPLY_ONLINE=", buf, 20)) {
+				type = '0' == buf[20] ? TYPE_BAT : TYPE_AC;
 				break;
 			}
 		}
 		fclose(file);
 	}
 	if (type == TYPE_NONE) {
-		puts("No AC ACPI");
+		printf("No AC");
+		closedir(dir);
 		return 0;
 	}
 
-	if ((file = fopen(BAT"uevent", "r")) != NULL) {
-		while (fgets(line, 80, file) != NULL) {
-			if (!strncmp("POWER_SUPPLY_STATUS=", line, 20)) {
-				strcpy(status, line + 20);
-				continue;
+	rewinddir(dir);
+	path = SYSFSFIND(dir, "Battery");
+	closedir(dir);
+	if (NULL != path) {
+		snprintf(buf, sizeof buf, PATH_PS"/%s/uevent", path);
+		free(path);
+		file = fopen(buf, "rb");
+		if (NULL != file) {
+			while (fgets(buf, sizeof buf, file) != NULL) {
+				if (MATCH("POWER_SUPPLY_CHARGE_FULL=")) {
+					capacity = STRTOL(buf + 25);
+					continue;
+				}
+				if (MATCH("POWER_SUPPLY_CHARGE_NOW=")) {
+					now = STRTOL(buf + 24);
+					continue;
+				}
+				if (MATCH("POWER_SUPPLY_CURRENT_NOW=")) {
+					rate = STRTOL(buf + 25);
+					continue;
+				}
+				if (MATCH("POWER_SUPPLY_ENERGY_FULL=")) {
+					capacity = STRTOL(buf + 25);
+					continue;
+				}
+				if (MATCH("POWER_SUPPLY_ENERGY_NOW=")) {
+					now = STRTOL(buf + 24);
+					continue;
+				}
+				if (MATCH("POWER_SUPPLY_POWER_NOW=")) {
+					rate = STRTOL(buf + 23);
+					continue;
+				}
 			}
-			if (!strncmp("POWER_SUPPLY_POWER_NOW=", line, 23)) {
-				rate = strtol(line + 23, NULL, 10);
-				continue;
-			}
-			if (!strncmp("POWER_SUPPLY_CURRENT_NOW=", line, 25)) {
-				rate = strtol(line + 25, NULL, 10);
-				continue;
-			}
-			if (!strncmp("POWER_SUPPLY_CHARGE_FULL=", line, 25)) {
-				capacity = strtol(line + 25, NULL, 10);
-				continue;
-			}
-			if (!strncmp("POWER_SUPPLY_ENERGY_FULL=", line, 25)) {
-				capacity = strtol(line + 25, NULL, 10);
-				continue;
-			}
-			if (!strncmp("POWER_SUPPLY_CHARGE_NOW=", line, 24)) {
-				now = strtol(line + 24, NULL, 10);
-				continue;
-			}
-			if (!strncmp("POWER_SUPPLY_ENERGY_NOW=", line, 24)) {
-				now = strtol(line + 24, NULL, 10);
-				continue;
-			}
+			fclose(file);
 		}
-		fclose(file);
 	}
 
-	percentage = now / (capacity / 100);
+	percentage = (100.0 * now) / capacity;
 	if (TYPE_BAT == type) {
-		if (argc > 1)
-			percentageMin = strtol(argv[1], NULL, 10);
-		if (percentageMin < 5)
-			percentageMin = 5;
-		if (percentage <= percentageMin)
+		percentage_min = 2 == argc ? STRTOL(argv[1]) : 0;
+		percentage_min = 5 > percentage_min ? 5 : percentage_min;
+		if (percentage <= percentage_min) {
 			printf("!");
+		}
 		printf("Bat");
 		remain = now;
 	} else {
@@ -89,7 +149,7 @@ main(int argc, char **argv)
 	}
 	printf(" %d%%", percentage);
 	if (0 != rate) {
-		printf(" (%d:%02d)\n", remain / rate, remain / (rate / 60) %
+		printf(" (%d:%02d)", remain / rate, remain / (rate / 60) %
 		    60);
 	}
 	return 0;

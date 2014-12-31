@@ -4,7 +4,7 @@ PREFIX?=~/opt
 all: hpower
 
 hpower: main.c
-	gcc -O2 -pedantic-errors -Wall -Werror -Wextra -Wshadow $< -o $@
+	gcc -D_BSD_SOURCE -ansi -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wstrict-prototypes -o $@ $<
 
 .PHONY: install
 install:

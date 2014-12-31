@@ -38,10 +38,16 @@ Put this in your .xinitrc/.xsession/wherever hip Linux distros want it:
 
 	while true; do
 		<hwm install>/hwm &> /tmp/hwm.log
-		if [ 0 -eq $? ]; then
+		if [ 2 -eq $? ]; then
 			break
 		fi
 	done
+
+Exit codes:
+
+    0 - Just quit
+    1 - Something bad happened
+    2 - Restart
 
 In order to display info in the bar instead of seeing the beautiful <hwm> art,
 you can do something like this:
@@ -62,7 +68,7 @@ where the xsetroot.sh script can contain e.g.:
 This way you can edit the status text while hwm is running.
 
 If the status string starts with an exclamation mark, hwm will flash the
-status box, useful e.g. for low battery level warning.
+status box, useful e.g. for low battery level warning (pst, see hpower).
 
 
 Configuration

@@ -1,9 +1,9 @@
 PREFIX=~/opt
 
-CC=cc
+CC=ccache gcc
 
-CFLAGS:=-ansi -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wuninitialized
-LDFLAGS:=`pkg-config xcb-icccm --libs`
+CFLAGS:=-ansi -ggdb -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wuninitialized
+LDFLAGS:=`pkg-config --libs xcb-icccm xcb-randr`
 
 all: hwm
 

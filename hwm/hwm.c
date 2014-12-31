@@ -17,6 +17,8 @@
 /*
  * TODO:
  * Better client placement with fudge (mm, fudge).
+ * Open windows on same workspace as potential parent.
+ * Warp pointer on alt-tab, make it hidden as config.
  */
 
 #include <sys/queue.h>
@@ -31,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <xcb/randr.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_event.h>
 #include <xcb/xcb_icccm.h>
@@ -79,6 +82,12 @@ struct String {
 	size_t	length;
 	char	str[NAME_LEN];
 };
+TAILQ_HEAD(ViewList, View);
+struct View {
+	int	x, y;
+	int	width, height;
+	TAILQ_ENTRY(View)	next;
+};
 TAILQ_HEAD(ClientList, Client);
 struct Client {
 	xcb_window_t	window;
@@ -120,6 +129,7 @@ static void		action_quit(struct Arg const *);
 static void		action_workspace_select(struct Arg const *);
 static xcb_atom_t	atom_get(char const *);
 static void		bar_draw(void);
+static void		bar_reset(void);
 static void		button_grab(struct Client *);
 static struct Client	*client_add(xcb_window_t);
 static struct Client	*client_add_details(xcb_window_t, int const *);
@@ -135,21 +145,28 @@ static void		client_snap_position(struct Client *);
 static uint32_t		color_get(char const *);
 static xcb_cursor_t	cursor_get(xcb_font_t, int);
 static void		die(char const *, ...);
-static void		event_button_press(xcb_generic_event_t const *);
-static void		event_configure_notify(xcb_generic_event_t const *);
-static void		event_configure_request(xcb_generic_event_t const *);
-static void		event_destroy_notify(xcb_generic_event_t const *);
-static void		event_enter_notify(xcb_generic_event_t const *);
-static void		event_expose(xcb_generic_event_t const *);
+static void		event_button_press(xcb_button_press_event_t const *);
+static void		event_configure_notify(xcb_configure_notify_event_t
+    const *);
+static void		event_configure_request(xcb_configure_request_event_t
+    const *);
+static void		event_destroy_notify(xcb_destroy_notify_event_t const
+    *);
+static void		event_enter_notify(xcb_enter_notify_event_t const *);
+static void		event_expose(xcb_expose_event_t const *);
 static void		event_handle(xcb_generic_event_t const *);
-static void		event_key_press(xcb_generic_event_t const *);
-static void		event_map_request(xcb_generic_event_t const *);
-static void		event_property_notify(xcb_generic_event_t const *);
-static void		event_unmap_notify(xcb_generic_event_t const *);
+static void		event_key_press(xcb_key_press_event_t const *);
+static void		event_map_request(xcb_map_request_event_t const *);
+static void		event_property_notify(xcb_property_notify_event_t
+    const *);
+static void		event_unmap_notify(xcb_unmap_notify_event_t const *);
+static void		randr_update(void);
 static void		root_name_update(void);
 static void		string_convert(struct String *, char const *, size_t);
 static int		text_draw(struct String const *, int, int, int, int);
 static int		text_width(struct String const *);
+static void		view_clear(void);
+static struct View	*view_find(int, int);
 
 /* Config { */
 
@@ -216,12 +233,13 @@ static struct ButtonBind c_button_bind[] = {
 
 /* } */
 
+typedef void (*EventHandler)(xcb_generic_event_t const *);
+
 static struct String g_workspace_label[WORKSPACE_NUM];
 static uint32_t g_values[3];
-static void (*g_event_handler[EVENT_MAX])(xcb_generic_event_t const *);
+static EventHandler g_event_handler[EVENT_MAX];
 static xcb_connection_t *g_conn;
 static xcb_screen_t *g_screen;
-static int g_width, g_height;
 static iconv_t g_iconv;
 static xcb_drawable_t g_root;
 static struct String g_root_name;
@@ -239,6 +257,7 @@ static uint32_t g_color_border_focus, g_color_border_unfocus;
 static uint32_t g_color_bar_bg, g_color_bar_fg;
 static uint32_t g_color_urgent1_bg, g_color_urgent1_fg;
 static uint32_t g_color_urgent2_bg, g_color_urgent2_fg;
+static struct ViewList g_view_list;
 static struct ClientList g_client_list[WORKSPACE_NUM];
 static int g_workspace_cur;
 static struct Client *g_focus;
@@ -247,9 +266,10 @@ static int g_has_urgent, g_timeout, g_blink;
 static double g_time_prev;
 static xcb_window_t g_button_press_window;
 static int g_button_press_x, g_button_press_y;
+static uint8_t g_randr_evbase;
 
 void
-action_client_browse(struct Arg const *a_arg)
+action_client_browse(struct Arg const *const a_arg)
 {
 	struct Client *c;
 	int do_browse;
@@ -302,19 +322,21 @@ action_client_browse(struct Arg const *a_arg)
 }
 
 void
-action_client_expand(struct Arg const *a_arg)
+action_client_expand(struct Arg const *const a_arg)
 {
+	struct View *view;
 	struct Client *c;
 	int new, test;
 
-	if (!g_focus) {
+	if (NULL == g_focus) {
 		return;
 	}
+	view = view_find(g_focus->x, g_focus->y);
 	switch (a_arg->i) {
-		case DIR_EAST: new = g_width - g_focus->x - 2; break;
+		case DIR_EAST: new = view->width - g_focus->x - 2; break;
 		case DIR_NORTH: return;
 		case DIR_WEST: return;
-		case DIR_SOUTH: new = g_height - g_focus->y - 2; break;
+		case DIR_SOUTH: new = view->height - g_focus->y - 2; break;
 		default: abort();
 	}
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
@@ -341,41 +363,43 @@ action_client_expand(struct Arg const *a_arg)
 }
 
 void
-action_client_grow(struct Arg const *a_arg)
+action_client_grow(struct Arg const *const a_arg)
 {
-	int incx = 1, incy = 1;
+	int incw = 1, inch = 1;
 
-	if (!g_focus) {
+	if (NULL == g_focus) {
 		return;
 	}
 	if (XCB_ICCCM_SIZE_HINT_P_RESIZE_INC & g_focus->hints.flags) {
-		incx = g_focus->hints.width_inc;
-		incy = g_focus->hints.height_inc;
+		incw = g_focus->hints.width_inc;
+		inch = g_focus->hints.height_inc;
 	}
 	switch (a_arg->i) {
-		case DIR_EAST: g_focus->width += incx; break;
-		case DIR_NORTH: g_focus->height -= incy; break;
-		case DIR_WEST: g_focus->width -= incx; break;
-		case DIR_SOUTH: g_focus->height += incy; break;
+		case DIR_EAST: g_focus->width += incw; break;
+		case DIR_NORTH: g_focus->height -= inch; break;
+		case DIR_WEST: g_focus->width -= incw; break;
+		case DIR_SOUTH: g_focus->height += inch; break;
 		default: abort();
 	}
 	client_resize(g_focus, 0);
 }
 
 void
-action_client_jump(struct Arg const *a_arg)
+action_client_jump(struct Arg const *const a_arg)
 {
+	struct View *view;
 	struct Client *c;
 	int new, test;
 
-	if (!g_focus) {
+	if (NULL == g_focus) {
 		return;
 	}
+	view = view_find(g_focus->x, g_focus->y);
 	switch (a_arg->i) {
-		case DIR_EAST: new = g_width - WIDTH(g_focus); break;
+		case DIR_EAST: new = view->width - WIDTH(g_focus); break;
 		case DIR_NORTH: new = g_font_height; break;
 		case DIR_WEST: new = 0; break;
-		case DIR_SOUTH: new = g_height - HEIGHT(g_focus); break;
+		case DIR_SOUTH: new = view->height - HEIGHT(g_focus); break;
 		default: abort();
 	}
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
@@ -409,14 +433,16 @@ action_client_jump(struct Arg const *a_arg)
 }
 
 void
-action_client_maximize(struct Arg const *a_arg)
+action_client_maximize(struct Arg const *const a_arg)
 {
+	struct View *view;
 	enum Maximize const c_toggle = a_arg->i;
 	enum Maximize result;
 
-	if (!g_focus) {
+	if (NULL == g_focus) {
 		return;
 	}
+	view = view_find(g_focus->x, g_focus->y);
 	switch (g_focus->maximize) {
 		case MAX_NOPE:
 			g_focus->max_old_x = g_focus->x;
@@ -445,14 +471,14 @@ action_client_maximize(struct Arg const *a_arg)
 		case MAX_BOTH:
 			g_focus->x = 0;
 			g_focus->y = g_font_height;
-			g_focus->width = g_width - 2;
-			g_focus->height = g_height - 2 - g_font_height;
+			g_focus->width = view->width - 2;
+			g_focus->height = view->height - 2 - g_font_height;
 			break;
 		case MAX_VERT:
 			g_focus->x = g_focus->max_old_x;
 			g_focus->y = g_font_height;
 			g_focus->width = g_focus->max_old_width;
-			g_focus->height = g_height - 2 - g_font_height;
+			g_focus->height = view->height - 2 - g_font_height;
 			break;
 	}
 	g_focus->maximize = result;
@@ -461,13 +487,13 @@ action_client_maximize(struct Arg const *a_arg)
 }
 
 void
-action_client_move(struct Arg const *a_arg)
+action_client_move(struct Arg const *const a_arg)
 {
 	xcb_generic_event_t *event;
 	int dx, dy, do_move;
 
 	(void)a_arg;
-	if (!g_focus) {
+	if (NULL == g_focus) {
 		return;
 	}
 	dx = g_focus->x - g_button_press_x;
@@ -510,26 +536,26 @@ action_client_move(struct Arg const *a_arg)
 }
 
 void
-action_client_relocate(struct Arg const *a_arg)
+action_client_relocate(struct Arg const *const a_arg)
 {
 	assert(0 <= a_arg->i && WORKSPACE_NUM > a_arg->i);
-	if (!g_focus || g_workspace_cur == a_arg->i) {
+	if (NULL == g_focus || g_workspace_cur == a_arg->i) {
 		return;
 	}
 	TAILQ_REMOVE(&g_client_list[g_workspace_cur], g_focus, next);
 	TAILQ_INSERT_HEAD(&g_client_list[a_arg->i], g_focus, next);
 	client_move(g_focus, HIDDEN);
-	client_focus(g_focus = NULL, 1, 0);
+	client_focus(NULL, 1, 0);
 }
 
 void
-action_client_resize(struct Arg const *a_arg)
+action_client_resize(struct Arg const *const a_arg)
 {
 	xcb_generic_event_t *event;
 	int dx, dy, do_resize;
 
 	(void)a_arg;
-	if (!g_focus) {
+	if (NULL == g_focus) {
 		return;
 	}
 	dx = g_focus->width - g_button_press_x;
@@ -571,7 +597,7 @@ action_client_resize(struct Arg const *a_arg)
 }
 
 void
-action_exec(struct Arg const *a_arg)
+action_exec(struct Arg const *const a_arg)
 {
 	pid_t pid;
 	char const *arg0 = ((char const **)a_arg->v)[0];
@@ -587,14 +613,14 @@ action_exec(struct Arg const *a_arg)
 }
 
 void
-action_furnish(struct Arg const *a_arg)
+action_furnish(struct Arg const *const a_arg)
 {
 	struct Client *c;
 	int num = 0;
 
 	(void)a_arg;
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
-		c->x += 10000;
+		c->x += 100000;
 		++num;
 	}
 	while (0 < num--) {
@@ -620,49 +646,50 @@ action_furnish(struct Arg const *a_arg)
 }
 
 void
-action_kill(struct Arg const *a_arg)
+action_kill(struct Arg const *const a_arg)
 {
+	xcb_icccm_get_wm_protocols_reply_t proto;
+	size_t i;
+	int has_delete = 0;
+
 	(void)a_arg;
-	if (g_focus) {
-		xcb_icccm_get_wm_protocols_reply_t proto;
-		size_t i;
-		int has_delete = 0;
-
-		proto.atoms_len = 0;
-		xcb_icccm_get_wm_protocols_reply(g_conn,
-		    xcb_icccm_get_wm_protocols(g_conn, g_focus->window,
-		    g_WM_PROTOCOLS), &proto, NULL);
-		for (i = 0; proto.atoms_len > i; ++i) {
-			has_delete |= g_WM_DELETE_WINDOW == proto.atoms[i];
-		}
-		xcb_icccm_get_wm_protocols_reply_wipe(&proto);
-		if (has_delete) {
-			xcb_client_message_event_t ev;
-
-			ev.response_type = XCB_CLIENT_MESSAGE;
-			ev.format = 32;
-			ev.sequence = 0;
-			ev.window = g_focus->window;
-			ev.type = g_WM_PROTOCOLS;
-			ev.data.data32[0] = g_WM_DELETE_WINDOW;
-			ev.data.data32[1] = XCB_CURRENT_TIME;
-			xcb_send_event(g_conn, 0, g_focus->window,
-			    XCB_EVENT_MASK_NO_EVENT, (char *)&ev);
-		} else {
-			xcb_kill_client(g_conn, g_focus->window);
-		}
-		client_delete(g_focus);
+	if (NULL == g_focus) {
+		return;
 	}
+	proto.atoms_len = 0;
+	xcb_icccm_get_wm_protocols_reply(g_conn,
+	    xcb_icccm_get_wm_protocols(g_conn, g_focus->window,
+	    g_WM_PROTOCOLS), &proto, NULL);
+	for (i = 0; proto.atoms_len > i; ++i) {
+		has_delete |= g_WM_DELETE_WINDOW == proto.atoms[i];
+	}
+	xcb_icccm_get_wm_protocols_reply_wipe(&proto);
+	if (has_delete) {
+		xcb_client_message_event_t ev;
+
+		ev.response_type = XCB_CLIENT_MESSAGE;
+		ev.format = 32;
+		ev.sequence = 0;
+		ev.window = g_focus->window;
+		ev.type = g_WM_PROTOCOLS;
+		ev.data.data32[0] = g_WM_DELETE_WINDOW;
+		ev.data.data32[1] = XCB_CURRENT_TIME;
+		xcb_send_event(g_conn, 0, g_focus->window,
+		    XCB_EVENT_MASK_NO_EVENT, (char *)&ev);
+	} else {
+		xcb_kill_client(g_conn, g_focus->window);
+	}
+	client_delete(g_focus);
 }
 
 void
-action_quit(struct Arg const *a_arg)
+action_quit(struct Arg const *const a_arg)
 {
 	g_run = a_arg->i;
 }
 
 void
-action_workspace_select(struct Arg const *a_arg)
+action_workspace_select(struct Arg const *const a_arg)
 {
 	struct Client *c;
 
@@ -677,11 +704,11 @@ action_workspace_select(struct Arg const *a_arg)
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
 		client_move(c, VISIBLE);
 	}
-	client_focus(g_focus = NULL, 1, 0);
+	client_focus(NULL, 1, 0);
 }
 
 xcb_atom_t
-atom_get(char const *a_name)
+atom_get(char const *const a_name)
 {
 	xcb_intern_atom_reply_t *reply;
 	xcb_atom_t atom;
@@ -696,15 +723,17 @@ atom_get(char const *a_name)
 }
 
 void
-bar_draw(void)
+bar_draw()
 {
 	xcb_rectangle_t rect;
+	struct View *view;
 	struct Client *c;
 	int i, x;
 
+	view = TAILQ_FIRST(&g_view_list);
 	rect.x = 0;
 	rect.y = 0;
-	rect.width = g_width;
+	rect.width = view->width;
 	rect.height = g_font_height;
 	xcb_change_gc(g_conn, g_gc, XCB_GC_FOREGROUND, &g_color_bar_bg);
 	xcb_poly_fill_rectangle(g_conn, g_pixmap, g_gc, 1, &rect);
@@ -725,18 +754,48 @@ bar_draw(void)
 			xcb_poly_rectangle(g_conn, g_pixmap, g_gc, 1, &rect);
 		}
 	}
-	text_draw(&g_root_name, 0, g_root_is_urgent, g_width -
+	text_draw(&g_root_name, 0, g_root_is_urgent, view->width -
 	    text_width(&g_root_name), 0);
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
 		x += text_draw(&c->name, g_focus == c, c->is_urgent, x, 0);
 	}
 
-	xcb_copy_area(g_conn, g_pixmap, g_bar, g_gc, 0, 0, 0, 0, g_width,
+	xcb_copy_area(g_conn, g_pixmap, g_bar, g_gc, 0, 0, 0, 0, view->width,
 	    g_font_height);
 }
 
 void
-button_grab(struct Client *a_client)
+bar_reset()
+{
+	struct View const *view;
+	int width_max;
+
+	if (XCB_NONE != g_bar) {
+		xcb_destroy_window(g_conn, g_bar);
+		xcb_free_pixmap(g_conn, g_pixmap);
+	}
+
+	g_pixmap = xcb_generate_id(g_conn);
+	width_max = 0;
+	TAILQ_FOREACH(view, &g_view_list, next) {
+		width_max = MAX(width_max, view->width);
+	}
+	xcb_create_pixmap(g_conn, g_screen->root_depth, g_pixmap, g_root,
+	    width_max, g_font_height);
+
+	g_bar = xcb_generate_id(g_conn);
+	g_values[0] = g_color_bar_bg;
+	g_values[1] = 1;
+	g_values[2] = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE;
+	xcb_create_window(g_conn, XCB_COPY_FROM_PARENT, g_bar, g_root, 0, 0,
+	    width_max, g_font_height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+	    XCB_COPY_FROM_PARENT, XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT
+	    | XCB_CW_EVENT_MASK, g_values);
+	xcb_map_window(g_conn, g_bar);
+}
+
+void
+button_grab(struct Client *const a_client)
 {
 	struct ButtonBind *bind;
 	size_t i;
@@ -753,22 +812,27 @@ button_grab(struct Client *a_client)
 }
 
 struct Client *
-client_add(xcb_window_t a_window)
+client_add(xcb_window_t const a_window)
 {
-	int arr[9] = {-1};
+	int data = -1;
 
-	return client_add_details(a_window, arr);
+	return client_add_details(a_window, &data);
 }
 
 struct Client *
-client_add_details(xcb_window_t a_window, int const *a_data)
+client_add_details(xcb_window_t const a_window, int const *const a_data)
 {
 	xcb_get_window_attributes_reply_t *attr;
 	xcb_get_geometry_reply_t *geom;
+	xcb_query_pointer_reply_t *query;
+	struct View *view;
 	struct Client *c;
 	int workspace;
 
-	if ((attr = xcb_get_window_attributes_reply(g_conn,
+	if (a_window == g_root) {
+		return NULL;
+	}
+	if (NULL != (attr = xcb_get_window_attributes_reply(g_conn,
 	    xcb_get_window_attributes(g_conn, a_window), NULL))) {
 		if (XCB_MAP_STATE_VIEWABLE != attr->map_state ||
 		    attr->override_redirect) {
@@ -780,18 +844,24 @@ client_add_details(xcb_window_t a_window, int const *a_data)
 
 	geom = xcb_get_geometry_reply(g_conn, xcb_get_geometry(g_conn,
 	    a_window), NULL);
-	if (!geom) {
+	if (NULL == geom) {
 		fprintf(stderr, "client_add: Could not get geometry of window"
 		    " 0x%08x.\n", a_window);
 		return NULL;
 	}
 
-	c = malloc(sizeof(struct Client));
+	c = malloc(sizeof *c);
 	c->window = a_window;
 	c->hints.flags = 0;
 	xcb_icccm_get_wm_normal_hints_reply(g_conn,
 	    xcb_icccm_get_wm_normal_hints(g_conn, a_window), &c->hints, NULL);
 	client_name_update(c);
+	query = xcb_query_pointer_reply(g_conn, xcb_query_pointer(g_conn,
+	    g_root), NULL);
+	view = view_find(query->root_x, query->root_y);
+	free(query);
+	c->x = view->x;
+	c->y = view->y;
 	c->width = geom->width;
 	c->height = geom->height;
 	free(geom);
@@ -834,68 +904,69 @@ client_add_details(xcb_window_t a_window, int const *a_data)
 }
 
 void
-client_delete(struct Client *a_client)
+client_delete(struct Client *const a_client)
 {
-	if (a_client) {
-		TAILQ_REMOVE(&g_client_list[g_workspace_cur], a_client, next);
-		free(a_client);
-		if (g_focus == a_client) {
-			client_focus(g_focus = NULL, 1, 0);
-		}
+	if (NULL == a_client) {
+		return;
+	}
+	TAILQ_REMOVE(&g_client_list[g_workspace_cur], a_client, next);
+	free(a_client);
+	if (a_client == g_focus) {
+		client_focus(g_focus = NULL, 1, 0);
 	}
 }
 
 void
-client_focus(struct Client *a_client, int a_do_reorder, int a_do_raise)
+client_focus(struct Client *const a_client, int const a_do_reorder, int const
+    a_do_raise)
 {
-	if (g_focus) {
+	xcb_icccm_wm_hints_t hints;
+
+	g_do_bar_redraw = 1;
+	if (NULL != g_focus) {
 		g_values[0] = g_color_border_unfocus;
 		xcb_change_window_attributes(g_conn, g_focus->window,
 		    XCB_CW_BORDER_PIXEL, g_values);
 	}
-	g_focus = a_client ? a_client :
+	g_focus = NULL != a_client ? a_client :
 	    TAILQ_FIRST(&g_client_list[g_workspace_cur]);
-	if (g_focus) {
-		xcb_icccm_wm_hints_t hints;
-
-		if (xcb_icccm_get_wm_hints_reply(g_conn,
-		    xcb_icccm_get_wm_hints(g_conn, g_focus->window),
-		    &hints, NULL)) {
-			hints.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
-			xcb_icccm_set_wm_hints(g_conn, g_focus->window,
-			    &hints);
-		}
-		g_focus->is_urgent = 0;
-		if (a_do_reorder) {
-			TAILQ_REMOVE(&g_client_list[g_workspace_cur], g_focus,
-			    next);
-			TAILQ_INSERT_HEAD(&g_client_list[g_workspace_cur],
-			    g_focus, next);
-		}
-		if (a_do_raise) {
-			g_values[0] = XCB_STACK_MODE_TOP_IF;
-			xcb_configure_window(g_conn, g_focus->window,
-			    XCB_CONFIG_WINDOW_STACK_MODE, g_values);
-		}
-		g_values[0] = g_color_border_focus;
-		xcb_change_window_attributes(g_conn, g_focus->window,
-		    XCB_CW_BORDER_PIXEL, g_values);
-		xcb_set_input_focus(g_conn, XCB_INPUT_FOCUS_POINTER_ROOT,
-		    g_focus->window, XCB_CURRENT_TIME);
+	if (NULL == g_focus) {
+		return;
 	}
-	g_do_bar_redraw = 1;
+
+	if (xcb_icccm_get_wm_hints_reply(g_conn,
+	    xcb_icccm_get_wm_hints(g_conn, g_focus->window), &hints, NULL)) {
+		hints.flags &= ~XCB_ICCCM_WM_HINT_X_URGENCY;
+		xcb_icccm_set_wm_hints(g_conn, g_focus->window, &hints);
+	}
+	g_focus->is_urgent = 0;
+	if (a_do_reorder) {
+		TAILQ_REMOVE(&g_client_list[g_workspace_cur], g_focus, next);
+		TAILQ_INSERT_HEAD(&g_client_list[g_workspace_cur], g_focus,
+		    next);
+	}
+	if (a_do_raise) {
+		g_values[0] = XCB_STACK_MODE_TOP_IF;
+		xcb_configure_window(g_conn, g_focus->window,
+		    XCB_CONFIG_WINDOW_STACK_MODE, g_values);
+	}
+	g_values[0] = g_color_border_focus;
+	xcb_change_window_attributes(g_conn, g_focus->window,
+	    XCB_CW_BORDER_PIXEL, g_values);
+	xcb_set_input_focus(g_conn, XCB_INPUT_FOCUS_POINTER_ROOT,
+	    g_focus->window, XCB_CURRENT_TIME);
 }
 
 struct Client *
-client_get(xcb_window_t a_window, int *a_out_workspace)
+client_get(xcb_window_t const a_window, int *const a_wspace)
 {
 	struct Client *c;
 	size_t i;
 
 	for (i = 0; WORKSPACE_NUM > i; ++i) {
 		TAILQ_FOREACH(c, &g_client_list[i], next) {
-			if (c->window == a_window) {
-				a_out_workspace ? *a_out_workspace = i : 0;
+			if (a_window == c->window) {
+				NULL != a_wspace ? *a_wspace = i : 0;
 				return c;
 			}
 		}
@@ -904,7 +975,7 @@ client_get(xcb_window_t a_window, int *a_out_workspace)
 }
 
 void
-client_move(struct Client *a_client, enum Visibility a_visibility)
+client_move(struct Client *const a_client, enum Visibility const a_visibility)
 {
 	if (VISIBLE == a_visibility) {
 		g_values[0] = a_client->x;
@@ -918,7 +989,7 @@ client_move(struct Client *a_client, enum Visibility a_visibility)
 }
 
 void
-client_name_update(struct Client *a_client)
+client_name_update(struct Client *const a_client)
 {
 	xcb_icccm_get_text_property_reply_t icccm;
 	xcb_get_property_reply_t *reply;
@@ -943,21 +1014,23 @@ client_name_update(struct Client *a_client)
 }
 
 void
-client_place(struct Client *a_client)
+client_place(struct Client *const a_client)
 {
+	struct View *view;
 	int best_score = 1e9, best_touching, best_x = 0, best_y =
-	    g_font_height, x = g_width - WIDTH(a_client), y = g_font_height -
-	    1;
+	    g_font_height, x, y = g_font_height - 1;
 
+	view = view_find(a_client->x, a_client->y);
+	x = view->width - WIDTH(a_client);
 	for (;;) {
-		struct Client *sibling;
+		struct Client const *sibling;
 		int score = 0, touching = 0, new_x, new_y, test;
 
-		if (x + WIDTH(a_client) == g_width) {
-			if (y + HEIGHT(a_client) == g_height) {
+		if (x + WIDTH(a_client) == view->width) {
+			if (y + HEIGHT(a_client) == view->height) {
 				break;
 			}
-			new_y = g_height - HEIGHT(a_client);
+			new_y = view->height - HEIGHT(a_client);
 			TAILQ_FOREACH(sibling,
 			    &g_client_list[g_workspace_cur], next) {
 				if (sibling != a_client) {
@@ -979,7 +1052,7 @@ client_place(struct Client *a_client)
 			}
 			y = new_y;
 		}
-		new_x = g_width - WIDTH(a_client);
+		new_x = view->width - WIDTH(a_client);
 		TAILQ_FOREACH(sibling, &g_client_list[g_workspace_cur], next)
 		{
 			if (sibling != a_client) {
@@ -1025,15 +1098,15 @@ client_place(struct Client *a_client)
 		}
 	}
 
-	a_client->x = MIN(best_x + 0 * OVERLAP_FUDGE * best_touching, g_width
-	    - WIDTH(a_client));
-	a_client->y = MIN(best_y + 0 * OVERLAP_FUDGE * best_touching, g_height
-	    - HEIGHT(a_client));
+	a_client->x = MIN(best_x + 0 * OVERLAP_FUDGE * best_touching,
+	    view->width - WIDTH(a_client));
+	a_client->y = MIN(best_y + 0 * OVERLAP_FUDGE * best_touching,
+	    view->height - HEIGHT(a_client));
 	client_move(a_client, VISIBLE);
 }
 
 void
-client_resize(struct Client *a_client, int a_do_round)
+client_resize(struct Client *const a_client, int const a_do_round)
 {
 	xcb_size_hints_t const *hints = &a_client->hints;
 	int min_width = 0, min_height = 0;
@@ -1072,11 +1145,13 @@ printf("Aspect = %d:%d .. %dx%d\n",
 }
 
 void
-client_snap_dimension(struct Client *a_client)
+client_snap_dimension(struct Client *const a_client)
 {
-	struct Client *sibling;
+	struct View *view;
+	struct Client const *sibling;
 	int ref;
 
+	view = view_find(a_client->x, a_client->y);
 	TAILQ_FOREACH(sibling, &g_client_list[g_workspace_cur], next) {
 		if (a_client == sibling) {
 			continue;
@@ -1086,18 +1161,20 @@ client_snap_dimension(struct Client *a_client)
 		ref = sibling->y - a_client->y - 2;
 		SNAP(<, ref, a_client->height, ref + SNAP_MARGIN);
 	}
-	ref = g_width - a_client->x - 2;
+	ref = view->width - a_client->x - 2;
 	SNAP(<, ref, a_client->width, ref + SNAP_MARGIN);
-	ref = g_height - a_client->y - 2;
+	ref = view->height - a_client->y - 2;
 	SNAP(<, ref, a_client->height, ref + SNAP_MARGIN);
 }
 
 void
-client_snap_position(struct Client *a_client)
+client_snap_position(struct Client *const a_client)
 {
-	struct Client *sibling;
+	struct View *view;
+	struct Client const *sibling;
 	int ref;
 
+	view = view_find(a_client->x, a_client->y);
 	TAILQ_FOREACH(sibling, &g_client_list[g_workspace_cur], next) {
 		if (a_client == sibling) {
 			continue;
@@ -1111,19 +1188,19 @@ client_snap_position(struct Client *a_client)
 		ref = sibling->y + HEIGHT(sibling);
 		SNAP(>, ref, a_client->y, ref - SNAP_MARGIN);
 	}
-	ref = g_width - WIDTH(a_client);
+	ref = view->width - WIDTH(a_client);
 	SNAP(<, ref, a_client->x, ref + SNAP_MARGIN);
 	ref = 0;
 	SNAP(>, ref, a_client->x, ref - SNAP_MARGIN);
 
-	ref = g_height - HEIGHT(a_client);
+	ref = view->height - HEIGHT(a_client);
 	SNAP(<, ref, a_client->y, ref + SNAP_MARGIN);
 	ref = g_font_height;
 	SNAP(>, ref, a_client->y, ref - SNAP_MARGIN);
 }
 
 uint32_t
-color_get(char const *a_name)
+color_get(char const *const a_name)
 {
 	xcb_alloc_named_color_reply_t *color;
 	uint32_t pixel;
@@ -1137,7 +1214,7 @@ color_get(char const *a_name)
 }
 
 xcb_cursor_t
-cursor_get(xcb_font_t a_font, int a_index)
+cursor_get(xcb_font_t const a_font, int const a_index)
 {
 	xcb_cursor_t cursor;
 
@@ -1148,237 +1225,220 @@ cursor_get(xcb_font_t a_font, int a_index)
 }
 
 void
-die(char const *a_fmt, ...)
+die(char const *const a_fmt, ...)
 {
 	va_list args;
 
 	va_start(args, a_fmt);
-	fprintf(stderr, a_fmt, args);
+	vfprintf(stderr, a_fmt, args);
 	va_end(args);
-	if (g_conn) {
+	if (NULL != g_conn) {
 		xcb_disconnect(g_conn);
 	}
 	exit(EXIT_FAILURE);
 }
 
 void
-event_button_press(xcb_generic_event_t const *a_event)
+event_button_press(xcb_button_press_event_t const *const a_event)
 {
 	struct Arg arg;
-	xcb_button_press_event_t const *ev = (xcb_button_press_event_t const
-	    *)a_event;
 	struct ButtonBind *bind;
 	struct Client *c;
 	enum Click click = CLICK_ROOT;
 	size_t i;
 
-	if (ev->event == g_bar) {
+	if (a_event->event == g_bar) {
+		struct View *view;
 		int x = 0;
 
+		view = view_find(a_event->root_x, a_event->root_y);
 		i = 0;
 		do {
 			x += text_width(&g_workspace_label[i]);
-		} while (x <= ev->root_x && WORKSPACE_NUM > ++i);
+		} while (x <= a_event->root_x && WORKSPACE_NUM > ++i);
 		if (WORKSPACE_NUM > i) {
 			click = CLICK_WORKSPACE;
 			arg.i = i;
-		} else if (g_width - text_width(&g_root_name) <= ev->root_x) {
+		} else if (view->width - text_width(&g_root_name) <=
+		    a_event->root_x) {
 			click = CLICK_STATUS;
 		}
-	} else if ((c = client_get(ev->event, NULL))) {
+	} else if (NULL != (c = client_get(a_event->event, NULL))) {
 		click = CLICK_CLIENT;
 		client_focus(c, 1, 1);
 	}
-	g_button_press_window = ev->event;
-	g_button_press_x = ev->root_x;
-	g_button_press_y = ev->root_y;
+	g_button_press_window = a_event->event;
+	g_button_press_x = a_event->root_x;
+	g_button_press_y = a_event->root_y;
 	for (i = 0, bind = c_button_bind; LENGTH(c_button_bind) > i; ++i,
 	    ++bind) {
-		if (bind->click == click && bind->code == ev->detail &&
-		    bind->state == ev->state) {
+		if (bind->click == click && bind->code == a_event->detail &&
+		    bind->state == a_event->state) {
 			bind->action(&arg);
 		}
 	}
 }
 
 void
-event_configure_notify(xcb_generic_event_t const *a_event)
+event_configure_notify(xcb_configure_notify_event_t const *const a_event)
 {
-	xcb_configure_notify_event_t const *ev = (xcb_configure_notify_event_t
-	    const *)a_event;
 	struct Client *c;
 
-	c = client_get(ev->window, NULL);
-	if (ev->override_redirect && c) {
+	if (NULL == (c = client_get(a_event->window, NULL))) {
+		client_add(a_event->window);
+	} else if (a_event->override_redirect) {
 		client_delete(c);
-	} else if (!c) {
-		client_add(ev->window);
 	}
 }
 
 void
-event_configure_request(xcb_generic_event_t const *a_event)
+event_configure_request(xcb_configure_request_event_t const *const a_event)
 {
-	xcb_configure_request_event_t const *ev =
-	    (xcb_configure_request_event_t const *)a_event;
-	uint32_t *p;
 	struct Client *c;
 	uint16_t mask;
 	int workspace;
 
-	if ((c = client_get(ev->window, &workspace))) {
-		if (XCB_CONFIG_WINDOW_X & ev->value_mask) {
-			c->x = ev->x;
+	if (NULL != (c = client_get(a_event->window, &workspace))) {
+		if (XCB_CONFIG_WINDOW_X & a_event->value_mask) {
+			c->x = a_event->x;
 		}
-		if (XCB_CONFIG_WINDOW_Y & ev->value_mask) {
-			c->y = MAX(ev->y, g_font_height);
+		if (XCB_CONFIG_WINDOW_Y & a_event->value_mask) {
+			c->y = MAX(a_event->y, g_font_height);
 		}
 		if ((XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y) &
-		    ev->value_mask) {
+		    a_event->value_mask) {
 			client_move(c, g_workspace_cur == workspace ?
 			    VISIBLE : HIDDEN);
 		}
-		if (XCB_CONFIG_WINDOW_WIDTH & ev->value_mask) {
-			c->width = ev->width;
+		if (XCB_CONFIG_WINDOW_WIDTH & a_event->value_mask) {
+			c->width = a_event->width;
 		}
-		if (XCB_CONFIG_WINDOW_HEIGHT & ev->value_mask) {
-			c->height = ev->height;
+		if (XCB_CONFIG_WINDOW_HEIGHT & a_event->value_mask) {
+			c->height = a_event->height;
 		}
 		if ((XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT) &
-		    ev->value_mask) {
+		    a_event->value_mask) {
 			client_resize(c, 0);
 		}
 		client_place(c);
 	} else {
+		uint32_t *p;
+
 		p = g_values;
 		mask = (XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
 		    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT) &
-		    ev->value_mask;
+		    a_event->value_mask;
 		if (XCB_CONFIG_WINDOW_X & mask) {
-			*p++ = ev->x;
+			*p++ = a_event->x;
 		}
 		if (XCB_CONFIG_WINDOW_Y & mask) {
-			*p++ = MAX(ev->y, g_font_height);
+			*p++ = MAX(a_event->y, g_font_height);
 		}
 		if (XCB_CONFIG_WINDOW_WIDTH & mask) {
-			*p++ = ev->width;
+			*p++ = a_event->width;
 		}
 		if (XCB_CONFIG_WINDOW_HEIGHT & mask) {
-			*p++ = ev->height;
+			*p++ = a_event->height;
 		}
-		xcb_configure_window(g_conn, ev->window, mask, g_values);
+		xcb_configure_window(g_conn, a_event->window, mask, g_values);
 	}
 }
 
 void
-event_destroy_notify(xcb_generic_event_t const *a_event)
+event_destroy_notify(xcb_destroy_notify_event_t const *const a_event)
 {
-	xcb_destroy_notify_event_t const *ev = (xcb_destroy_notify_event_t
-	    const *)a_event;
-	struct Client *c;
-
-	if ((c = client_get(ev->window, NULL))) {
-		client_delete(c);
-	}
+	client_delete(client_get(a_event->window, NULL));
 }
 
 void
-event_enter_notify(xcb_generic_event_t const *a_event)
+event_enter_notify(xcb_enter_notify_event_t const *const a_event)
 {
-	xcb_enter_notify_event_t const *ev = (xcb_enter_notify_event_t const
-	    *)a_event;
 	struct Client *c;
 	int workspace;
 
-	if ((c = client_get(ev->event, &workspace)) && g_workspace_cur ==
-	    workspace) {
+	if (NULL != (c = client_get(a_event->event, &workspace)) &&
+	    g_workspace_cur == workspace) {
 		client_focus(c, 1, 0);
 	}
 }
 
 void
-event_expose(xcb_generic_event_t const *a_event)
+event_expose(xcb_expose_event_t const *const a_event)
 {
-	xcb_expose_event_t const *ev = (xcb_expose_event_t const *)a_event;
-
-	if (0 == ev->count && ev->window == g_bar) {
-		bar_draw();
+	if (0 == a_event->count && a_event->window == g_bar) {
+		g_do_bar_redraw = 1;
 	}
 }
 
 void
-event_handle(xcb_generic_event_t const *a_event)
+event_handle(xcb_generic_event_t const *const a_event)
 {
-	size_t i = XCB_EVENT_RESPONSE_TYPE(a_event);
+	uint8_t const c_i = XCB_EVENT_RESPONSE_TYPE(a_event);
 
-	if (EVENT_MAX > i && g_event_handler[i]) {
-		g_event_handler[i](a_event);
-	} else {
+	if (c_i == g_randr_evbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY) {
+		randr_update();
+	} else if (EVENT_MAX > c_i && g_event_handler[c_i]) {
+		g_event_handler[c_i](a_event);
 	}
 }
 
 void
-event_key_press(xcb_generic_event_t const *a_event)
+event_key_press(xcb_key_press_event_t const *const a_event)
 {
-	xcb_key_press_event_t const *ev = (xcb_key_press_event_t const
-	    *)a_event;
 	struct KeyBind *bind;
 	size_t i;
 
 	for (i = 0, bind = c_key_bind; LENGTH(c_key_bind) > i; ++i, ++bind) {
-		if (bind->code == ev->detail && bind->state == ev->state) {
+		if (bind->code == a_event->detail &&
+		    bind->state == a_event->state) {
 			bind->action(&bind->arg);
 		}
 	}
 }
 
 void
-event_map_request(xcb_generic_event_t const *a_event)
+event_map_request(xcb_map_request_event_t const *const a_event)
 {
-	xcb_map_request_event_t const *ev = (xcb_map_request_event_t const
-	    *)a_event;
 	struct Client *c;
 
-	xcb_map_window(g_conn, ev->window);
-	if ((c = (c = client_get(ev->window, NULL)) ? c :
-	    client_add(ev->window))) {
+	xcb_map_window(g_conn, a_event->window);
+	if (NULL != (c = NULL != (c = client_get(a_event->window, NULL)) ? c :
+	    client_add(a_event->window))) {
 		client_focus(c, 1, 1);
 	}
 }
 
 void
-event_property_notify(xcb_generic_event_t const *a_event)
+event_property_notify(xcb_property_notify_event_t const *const a_event)
 {
-	xcb_property_notify_event_t const *ev = (xcb_property_notify_event_t
-	    const *)a_event;
-
-	if (ev->window == g_root) {
-		if (XCB_ATOM_WM_NAME == ev->atom) {
+	if (a_event->window == g_root) {
+		if (XCB_ATOM_WM_NAME == a_event->atom) {
 			root_name_update();
 			g_do_bar_redraw = 1;
 		}
 	} else {
 		struct Client *c;
 
-		if ((c = client_get(ev->window, NULL))) {
-			if (XCB_ATOM_WM_HINTS == ev->atom) {
+		c = client_get(a_event->window, NULL);
+		if (NULL != c) {
+			if (XCB_ATOM_WM_HINTS == a_event->atom) {
 				xcb_icccm_wm_hints_t hints;
 
 				if (xcb_icccm_get_wm_hints_reply(g_conn,
 				    xcb_icccm_get_wm_hints(g_conn,
-				    ev->window), &hints, NULL)) {
+				    a_event->window), &hints, NULL)) {
 					if ((XCB_ICCCM_WM_HINT_X_URGENCY &
 					    hints.flags) && g_focus != c) {
 						c->is_urgent = 1;
 						g_do_bar_redraw = 1;
 					}
 				}
-			} else if (XCB_ATOM_WM_NORMAL_HINTS == ev->atom) {
+			} else if (XCB_ATOM_WM_NORMAL_HINTS == a_event->atom) {
 				xcb_icccm_get_wm_normal_hints_reply(g_conn,
 				    xcb_icccm_get_wm_normal_hints(g_conn,
 				    c->window), &c->hints, NULL);
-			} else if (g_NET_WM_NAME == ev->atom ||
-			    XCB_ATOM_WM_NAME == ev->atom) {
+			} else if (g_NET_WM_NAME == a_event->atom ||
+			    XCB_ATOM_WM_NAME == a_event->atom) {
 				client_name_update(c);
 				g_do_bar_redraw = 1;
 			}
@@ -1387,18 +1447,86 @@ event_property_notify(xcb_generic_event_t const *a_event)
 }
 
 void
-event_unmap_notify(xcb_generic_event_t const *a_event)
+event_unmap_notify(xcb_unmap_notify_event_t const *const a_event)
 {
-	struct Client *c;
-
-	if ((c = client_get(((xcb_unmap_notify_event_t const
-	    *)a_event)->window, NULL))) {
-		client_delete(c);
-	}
+	client_delete(client_get(a_event->window, NULL));
 }
 
 void
-root_name_update(void)
+randr_update()
+{
+	xcb_timestamp_t timestamp;
+	xcb_randr_get_screen_resources_current_reply_t *res;
+	xcb_randr_output_t *output_array;
+	xcb_randr_get_output_info_cookie_t *cookie_array;
+	int i, len;
+
+	view_clear();
+
+	/* Get randr output IDs. */
+	res = xcb_randr_get_screen_resources_current_reply(g_conn,
+	    xcb_randr_get_screen_resources_current(g_conn, g_root), NULL);
+	if (NULL == res) {
+		return;
+	}
+	timestamp = res->config_timestamp;
+	len = xcb_randr_get_screen_resources_current_outputs_length(res);
+	output_array = xcb_randr_get_screen_resources_current_outputs(res);
+
+	/* Send requests and handle them one at a time. */
+	cookie_array = malloc(len * sizeof *cookie_array);
+	for (i = 0; len > i; ++i) {
+		cookie_array[i] = xcb_randr_get_output_info(g_conn,
+		    output_array[i], timestamp);
+	}
+	for (i = 0; len > i; ++i) {
+		xcb_randr_get_output_info_reply_t *output_info;
+		xcb_randr_get_crtc_info_reply_t *crtc;
+		struct View *view;
+
+		if (NULL == (output_info =
+		    xcb_randr_get_output_info_reply(g_conn, cookie_array[i],
+		    NULL))) {
+			continue;
+		}
+		if (XCB_NONE == output_info->crtc) {
+			free(output_info);
+			continue;
+		}
+		crtc = xcb_randr_get_crtc_info_reply(g_conn,
+		    xcb_randr_get_crtc_info(g_conn, output_info->crtc,
+		    timestamp), NULL);
+		free(output_info);
+		if (NULL == crtc) {
+			continue;
+		}
+		TAILQ_FOREACH(view, &g_view_list, next) {
+			if (view->x == crtc->x && view->y == crtc->y) {
+				/* Clone, save min dimensions. */
+				view->width = MIN(view->width, crtc->width);
+				view->height = MIN(view->height,
+				    crtc->height);
+				break;
+			}
+		}
+		if (TAILQ_END(&g_view_list) == view) {
+			view = malloc(sizeof *view);
+			view->x = crtc->x;
+			view->y = crtc->y;
+			view->width = crtc->width;
+			view->height = crtc->height;
+			TAILQ_INSERT_TAIL(&g_view_list, view, next);
+		}
+		free(crtc);
+	}
+	free(cookie_array);
+	free(res);
+	assert(!TAILQ_EMPTY(&g_view_list));
+	bar_reset();
+}
+
+void
+root_name_update()
 {
 	xcb_icccm_get_text_property_reply_t icccm;
 
@@ -1419,18 +1547,20 @@ root_name_update(void)
 }
 
 void
-string_convert(struct String *a_out, char const *a_in, size_t a_inlen)
+string_convert(struct String *const a_out, char const *const a_in, size_t
+    const a_inlen)
 {
 	char *p = (char *)a_out->str;
+	size_t inlen = a_inlen;
 	size_t len = NAME_LEN;
 
-	iconv(g_iconv, (char **)&a_in, &a_inlen, (char **)&p, &len);
+	iconv(g_iconv, (char **)&a_in, &inlen, (char **)&p, &len);
 	a_out->length = (NAME_LEN - len) / 2;
 }
 
 int
-text_draw(struct String const *a_text, int a_is_focused, int a_is_urgent, int
-    a_x, int a_y)
+text_draw(struct String const *const a_text, int const a_is_focused, int const
+    a_is_urgent, int const a_x, const int a_y)
 {
 	xcb_rectangle_t rect;
 	uint32_t bg = a_is_urgent ? (g_blink ? g_color_urgent2_bg :
@@ -1463,7 +1593,7 @@ text_draw(struct String const *a_text, int a_is_focused, int a_is_urgent, int
 }
 
 int
-text_width(struct String const *a_text)
+text_width(struct String const *const a_text)
 {
 	xcb_query_text_extents_reply_t *reply;
 	int width;
@@ -1476,6 +1606,32 @@ text_width(struct String const *a_text)
 	return TEXT_PADDING + width + TEXT_PADDING;
 }
 
+void
+view_clear()
+{
+	while (!TAILQ_EMPTY(&g_view_list)) {
+		struct View *view;
+
+		view = TAILQ_FIRST(&g_view_list);
+		TAILQ_REMOVE(&g_view_list, view, next);
+		free(view);
+	}
+}
+
+struct View *
+view_find(int const a_x, int const a_y)
+{
+	struct View *view;
+
+	TAILQ_FOREACH(view, &g_view_list, next) {
+		if (view->x <= a_x && a_x < view->x + view->width &&
+		    view->y <= a_y && a_y < view->y + view->height) {
+			return view;
+		}
+	}
+	return TAILQ_FIRST(&g_view_list);
+}
+
 int
 main()
 {
@@ -1483,11 +1639,14 @@ main()
 	xcb_screen_iterator_t it;
 	struct pollfd fds;
 	FILE *file;
+	xcb_query_extension_reply_t const *ext_reply;
 	xcb_query_font_reply_t *font_reply;
 	xcb_query_tree_reply_t *tree_reply;
 	struct KeyBind const *bind;
 	size_t i;
 	int screen_no, error;
+
+	g_bar = XCB_NONE;
 
 	/* Basic setup. */
 	if (SIG_ERR == signal(SIGCHLD, SIG_IGN)) {
@@ -1513,20 +1672,33 @@ main()
 	if (!(g_screen = it.data)) {
 		die("Could not get current screen.");
 	}
-	g_width = g_screen->width_in_pixels;
-	g_height = g_screen->height_in_pixels;
 	g_root = g_screen->root;
 
-	g_event_handler[XCB_KEY_PRESS] = event_key_press;
-	g_event_handler[XCB_BUTTON_PRESS] = event_button_press;
-	g_event_handler[XCB_ENTER_NOTIFY] = event_enter_notify;
-	g_event_handler[XCB_EXPOSE] = event_expose;
-	g_event_handler[XCB_DESTROY_NOTIFY] = event_destroy_notify;
-	g_event_handler[XCB_UNMAP_NOTIFY] = event_unmap_notify;
-	g_event_handler[XCB_MAP_REQUEST] = event_map_request;
-	g_event_handler[XCB_CONFIGURE_NOTIFY] = event_configure_notify;
-	g_event_handler[XCB_CONFIGURE_REQUEST] = event_configure_request;
-	g_event_handler[XCB_PROPERTY_NOTIFY] = event_property_notify;
+	/* Setup Xrandr. */
+	ext_reply = xcb_get_extension_data(g_conn, &xcb_randr_id);
+	if (!ext_reply->present) {
+		die("No Xrandr.");
+	}
+	g_randr_evbase = ext_reply->first_event;
+	TAILQ_INIT(&g_view_list);
+	randr_update();
+	xcb_randr_select_input(g_conn, g_root,
+	    XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE |
+	    XCB_RANDR_NOTIFY_MASK_CRTC_CHANGE |
+	    XCB_RANDR_NOTIFY_MASK_OUTPUT_CHANGE |
+	    XCB_RANDR_NOTIFY_MASK_OUTPUT_PROPERTY);
+
+#define EVENT_SET(type, func) g_event_handler[type] = (EventHandler)func
+	EVENT_SET(XCB_KEY_PRESS, event_key_press);
+	EVENT_SET(XCB_BUTTON_PRESS, event_button_press);
+	EVENT_SET(XCB_ENTER_NOTIFY, event_enter_notify);
+	EVENT_SET(XCB_EXPOSE, event_expose);
+	EVENT_SET(XCB_DESTROY_NOTIFY, event_destroy_notify);
+	EVENT_SET(XCB_UNMAP_NOTIFY, event_unmap_notify);
+	EVENT_SET(XCB_MAP_REQUEST, event_map_request);
+	EVENT_SET(XCB_CONFIGURE_NOTIFY, event_configure_notify);
+	EVENT_SET(XCB_CONFIGURE_REQUEST, event_configure_request);
+	EVENT_SET(XCB_PROPERTY_NOTIFY, event_property_notify);
 
 	/* Pointer cursors. */
 	cursor_font = xcb_generate_id(g_conn);
@@ -1552,9 +1724,9 @@ main()
 
 	/* Graphics. */
 	g_font = xcb_generate_id(g_conn);
-	xcb_open_font(g_conn, g_font, 5, FONT_FACE);
-	if (!(font_reply = xcb_query_font_reply(g_conn, xcb_query_font(g_conn,
-	    g_font), NULL))) {
+	xcb_open_font(g_conn, g_font, sizeof(FONT_FACE) - 1, FONT_FACE);
+	if (NULL == (font_reply = xcb_query_font_reply(g_conn,
+	    xcb_query_font(g_conn, g_font), NULL))) {
 		die("Could not load font face '%s'.", FONT_FACE);
 	}
 	g_font_ascent = font_reply->font_ascent;
@@ -1563,10 +1735,7 @@ main()
 
 	g_gc = xcb_generate_id(g_conn);
 	xcb_create_gc(g_conn, g_gc, g_root, 0, NULL);
-
-	g_pixmap = xcb_generate_id(g_conn);
-	xcb_create_pixmap(g_conn, g_screen->root_depth, g_pixmap, g_root,
-	    g_width, g_font_height);
+	xcb_change_gc(g_conn, g_gc, XCB_GC_FONT, &g_font);
 
 	/* Configs. */
 	g_color_border_focus = color_get(BORDER_FOCUS);
@@ -1587,7 +1756,7 @@ main()
 		TAILQ_INIT(&g_client_list[i]);
 	}
 
-	/* Furnish existing windows, and reuse persisted info. */
+	/* Furnish existing windows, and reuse persisting info. */
 	if ((tree_reply = xcb_query_tree_reply(g_conn, xcb_query_tree(g_conn,
 	    g_root), NULL))) {
 		char line[80], *p;
@@ -1598,10 +1767,14 @@ main()
 		w = xcb_query_tree_children(tree_reply);
 		num = xcb_query_tree_children_length(tree_reply);
 		if ((file = fopen(PERSIST_FILE, "rb"))) {
+			xcb_window_t focus_id;
+
 			fgets(line, 80, file);
 			g_workspace_cur = strtol(line, NULL, 10);
 			g_workspace_cur = MAX(0, g_workspace_cur);
 			g_workspace_cur = MIN(WORKSPACE_NUM, g_workspace_cur);
+			fgets(line, 80, file);
+			focus_id = strtol(line, NULL, 10);
 			while (fgets(line, 80, file)) {
 				for (p = strtok(line, " "), i = 0; p && 10 >
 				    i; p = strtok(NULL, " "), ++i) {
@@ -1612,16 +1785,20 @@ main()
 						if (j[0] == (int)w[i]) {
 							client_add_details(
 							    w[i], j + 1);
-							w[i] = 0;
+							w[i] = XCB_NONE;
 							break;
 						}
 					}
 				}
 			}
+			if (XCB_NONE != focus_id) {
+				g_focus = client_get(focus_id, NULL);
+			}
 			fclose(file);
 		}
 		for (i = 0; num > i; ++i) {
-			if (w[i] && !client_get(w[i], NULL)) {
+			if (XCB_NONE != w[i] &&
+			    NULL == client_get(w[i], NULL)) {
 				client_add(w[i]);
 			}
 		}
@@ -1631,16 +1808,8 @@ main()
 	client_focus(NULL, 1, 1);
 
 	/* Bar. */
-	g_bar = xcb_generate_id(g_conn);
-	g_values[0] = g_color_bar_bg;
-	g_values[1] = 1;
-	g_values[2] = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE;
-	xcb_create_window(g_conn, XCB_COPY_FROM_PARENT, g_bar, g_root, 0, 0,
-	    g_width, g_font_height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
-	    XCB_COPY_FROM_PARENT, XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT
-	    | XCB_CW_EVENT_MASK, g_values);
-	xcb_map_window(g_conn, g_bar);
 	root_name_update();
+	bar_reset();
 	bar_draw();
 
 	xcb_flush(g_conn);
@@ -1689,34 +1858,42 @@ main()
 	if (RUN_RESTART == g_run) {
 		file = fopen(PERSIST_FILE, "wb");
 		if (NULL == file) {
-			err(EXIT_FAILURE, "Could not save persist info");
+			warn("Could not save persist info");
 		} else {
 			fprintf(file, "%d\n", g_workspace_cur);
+			fprintf(file, "%ld\n", NULL == g_focus ? XCB_NONE :
+			    (long)g_focus->window);
 			for (i = 0; WORKSPACE_NUM > i; ++i) {
-				while (!TAILQ_EMPTY(&g_client_list[i])) {
-					struct Client *c;
+				struct Client *c;
 
-					c = TAILQ_FIRST(&g_client_list[i]);
-					fprintf(file, "%d %d %d %d %d %d %d "
-					    "%d %d %d\n", c->window, (int)i,
-					    c->is_urgent, c->x, c->y,
+				TAILQ_FOREACH(c, &g_client_list[i], next) {
+					fprintf(file, "%ld %d %d %d %d %d %d "
+					    "%d %d %d\n", (long)c->window,
+					    (int)i, c->is_urgent, c->x, c->y,
 					    c->maximize, c->max_old_x,
 					    c->max_old_y, c->max_old_width,
 					    c->max_old_height);
-					TAILQ_REMOVE(&g_client_list[i], c,
-					    next);
-					client_delete(c);
 				}
 			}
 			fclose(file);
 		}
 	} else {
-/*		remove(PERSIST_FILE);*/
+		remove(PERSIST_FILE);
 	}
+	for (i = 0; WORKSPACE_NUM > i; ++i) {
+		while (!TAILQ_EMPTY(&g_client_list[i])) {
+			struct Client *c;
+
+			c = TAILQ_FIRST(&g_client_list[i]);
+			TAILQ_REMOVE(&g_client_list[i], c, next);
+			client_delete(c);
+		}
+	}
+	view_clear();
 	xcb_flush(g_conn);
 	xcb_disconnect(g_conn);
 
 	iconv_close(g_iconv);
 
-	exit(RUN_RESTART == g_run);
+	exit(RUN_RESTART == g_run ? 2 : 0);
 }
