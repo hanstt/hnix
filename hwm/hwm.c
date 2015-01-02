@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Hans Toshihide Törnqvist <hans.tornqvist@gmail.com>
+ * Copyright (c) 2014-2015 Hans Toshihide Törnqvist <hans.tornqvist@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -66,6 +66,10 @@
 		test = ref;\
 	}\
 } while (0)
+#define VIEW_BOTTOM(v) ((v)->y + (v)->height)
+#define VIEW_LEFT(v) ((v)->x)
+#define VIEW_RIGHT(v) ((v)->x + (v)->width)
+#define VIEW_TOP(v) ((v)->y)
 #define WIDTH(c) (1 + (c)->width + 1)
 
 enum Click { CLICK_ROOT, CLICK_WORKSPACE, CLICK_STATUS, CLICK_CLIENT };
@@ -84,6 +88,7 @@ struct String {
 };
 TAILQ_HEAD(ViewList, View);
 struct View {
+	xcb_randr_output_t	output;
 	int	x, y;
 	int	width, height;
 	TAILQ_ENTRY(View)	next;
@@ -333,10 +338,11 @@ action_client_expand(struct Arg const *const a_arg)
 	}
 	view = view_find(g_focus->x, g_focus->y);
 	switch (a_arg->i) {
-		case DIR_EAST: new = view->width - g_focus->x - 2; break;
+		case DIR_EAST: new = VIEW_RIGHT(view) - g_focus->x - 2; break;
 		case DIR_NORTH: return;
 		case DIR_WEST: return;
-		case DIR_SOUTH: new = view->height - g_focus->y - 2; break;
+		case DIR_SOUTH: new = VIEW_BOTTOM(view) - g_focus->y - 2;
+				break;
 		default: abort();
 	}
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
@@ -396,10 +402,11 @@ action_client_jump(struct Arg const *const a_arg)
 	}
 	view = view_find(g_focus->x, g_focus->y);
 	switch (a_arg->i) {
-		case DIR_EAST: new = view->width - WIDTH(g_focus); break;
+		case DIR_EAST: new = VIEW_RIGHT(view) - WIDTH(g_focus); break;
 		case DIR_NORTH: new = g_font_height; break;
 		case DIR_WEST: new = 0; break;
-		case DIR_SOUTH: new = view->height - HEIGHT(g_focus); break;
+		case DIR_SOUTH: new = VIEW_BOTTOM(view) - HEIGHT(g_focus);
+				break;
 		default: abort();
 	}
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
@@ -754,21 +761,20 @@ bar_draw()
 			xcb_poly_rectangle(g_conn, g_pixmap, g_gc, 1, &rect);
 		}
 	}
-	text_draw(&g_root_name, 0, g_root_is_urgent, view->width -
+	text_draw(&g_root_name, 0, g_root_is_urgent, VIEW_RIGHT(view) -
 	    text_width(&g_root_name), 0);
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
 		x += text_draw(&c->name, g_focus == c, c->is_urgent, x, 0);
 	}
 
-	xcb_copy_area(g_conn, g_pixmap, g_bar, g_gc, 0, 0, 0, 0, view->width,
-	    g_font_height);
+	xcb_copy_area(g_conn, g_pixmap, g_bar, g_gc, 0, 0, view->x, view->y,
+	    VIEW_RIGHT(view), g_font_height);
 }
 
 void
 bar_reset()
 {
 	struct View const *view;
-	int width_max;
 
 	if (XCB_NONE != g_bar) {
 		xcb_destroy_window(g_conn, g_bar);
@@ -776,19 +782,16 @@ bar_reset()
 	}
 
 	g_pixmap = xcb_generate_id(g_conn);
-	width_max = 0;
-	TAILQ_FOREACH(view, &g_view_list, next) {
-		width_max = MAX(width_max, view->width);
-	}
+	view = TAILQ_FIRST(&g_view_list);
 	xcb_create_pixmap(g_conn, g_screen->root_depth, g_pixmap, g_root,
-	    width_max, g_font_height);
+	    view->width, g_font_height);
 
 	g_bar = xcb_generate_id(g_conn);
 	g_values[0] = g_color_bar_bg;
 	g_values[1] = 1;
 	g_values[2] = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE;
 	xcb_create_window(g_conn, XCB_COPY_FROM_PARENT, g_bar, g_root, 0, 0,
-	    width_max, g_font_height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+	    view->width, g_font_height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
 	    XCB_COPY_FROM_PARENT, XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT
 	    | XCB_CW_EVENT_MASK, g_values);
 	xcb_map_window(g_conn, g_bar);
@@ -1021,16 +1024,16 @@ client_place(struct Client *const a_client)
 	    g_font_height, x, y = g_font_height - 1;
 
 	view = view_find(a_client->x, a_client->y);
-	x = view->width - WIDTH(a_client);
+	x = VIEW_RIGHT(view) - WIDTH(a_client);
 	for (;;) {
 		struct Client const *sibling;
 		int score = 0, touching = 0, new_x, new_y, test;
 
-		if (x + WIDTH(a_client) == view->width) {
-			if (y + HEIGHT(a_client) == view->height) {
+		if (x + WIDTH(a_client) == VIEW_RIGHT(view)) {
+			if (y + HEIGHT(a_client) == VIEW_BOTTOM(view)) {
 				break;
 			}
-			new_y = view->height - HEIGHT(a_client);
+			new_y = VIEW_BOTTOM(view) - HEIGHT(a_client);
 			TAILQ_FOREACH(sibling,
 			    &g_client_list[g_workspace_cur], next) {
 				if (sibling != a_client) {
@@ -1045,14 +1048,14 @@ client_place(struct Client *const a_client)
 					CONVERGE(<, y, test, new_y);
 				}
 			}
-			x = -1;
+			x = VIEW_LEFT(view) - 1;
 			test = g_font_height;
 			if (y < test && test < new_y) {
 				new_y = test;
 			}
 			y = new_y;
 		}
-		new_x = view->width - WIDTH(a_client);
+		new_x = VIEW_RIGHT(view) - WIDTH(a_client);
 		TAILQ_FOREACH(sibling, &g_client_list[g_workspace_cur], next)
 		{
 			if (sibling != a_client) {
@@ -1099,9 +1102,9 @@ client_place(struct Client *const a_client)
 	}
 
 	a_client->x = MIN(best_x + 0 * OVERLAP_FUDGE * best_touching,
-	    view->width - WIDTH(a_client));
+	    VIEW_RIGHT(view) - WIDTH(a_client));
 	a_client->y = MIN(best_y + 0 * OVERLAP_FUDGE * best_touching,
-	    view->height - HEIGHT(a_client));
+	    VIEW_BOTTOM(view) - HEIGHT(a_client));
 	client_move(a_client, VISIBLE);
 }
 
@@ -1161,9 +1164,9 @@ client_snap_dimension(struct Client *const a_client)
 		ref = sibling->y - a_client->y - 2;
 		SNAP(<, ref, a_client->height, ref + SNAP_MARGIN);
 	}
-	ref = view->width - a_client->x - 2;
+	ref = VIEW_RIGHT(view) - a_client->x - 2;
 	SNAP(<, ref, a_client->width, ref + SNAP_MARGIN);
-	ref = view->height - a_client->y - 2;
+	ref = VIEW_BOTTOM(view) - a_client->y - 2;
 	SNAP(<, ref, a_client->height, ref + SNAP_MARGIN);
 }
 
@@ -1188,12 +1191,12 @@ client_snap_position(struct Client *const a_client)
 		ref = sibling->y + HEIGHT(sibling);
 		SNAP(>, ref, a_client->y, ref - SNAP_MARGIN);
 	}
-	ref = view->width - WIDTH(a_client);
+	ref = VIEW_RIGHT(view) - WIDTH(a_client);
 	SNAP(<, ref, a_client->x, ref + SNAP_MARGIN);
 	ref = 0;
 	SNAP(>, ref, a_client->x, ref - SNAP_MARGIN);
 
-	ref = view->height - HEIGHT(a_client);
+	ref = VIEW_BOTTOM(view) - HEIGHT(a_client);
 	SNAP(<, ref, a_client->y, ref + SNAP_MARGIN);
 	ref = g_font_height;
 	SNAP(>, ref, a_client->y, ref - SNAP_MARGIN);
@@ -1259,7 +1262,7 @@ event_button_press(xcb_button_press_event_t const *const a_event)
 		if (WORKSPACE_NUM > i) {
 			click = CLICK_WORKSPACE;
 			arg.i = i;
-		} else if (view->width - text_width(&g_root_name) <=
+		} else if (VIEW_RIGHT(view) - text_width(&g_root_name) <=
 		    a_event->root_x) {
 			click = CLICK_STATUS;
 		}
@@ -1459,6 +1462,8 @@ randr_update()
 	xcb_randr_get_screen_resources_current_reply_t *res;
 	xcb_randr_output_t *output_array;
 	xcb_randr_get_output_info_cookie_t *cookie_array;
+	xcb_randr_get_output_primary_reply_t *primary;
+	struct View *view;
 	int i, len;
 
 	view_clear();
@@ -1482,7 +1487,6 @@ randr_update()
 	for (i = 0; len > i; ++i) {
 		xcb_randr_get_output_info_reply_t *output_info;
 		xcb_randr_get_crtc_info_reply_t *crtc;
-		struct View *view;
 
 		if (NULL == (output_info =
 		    xcb_randr_get_output_info_reply(g_conn, cookie_array[i],
@@ -1500,28 +1504,31 @@ randr_update()
 		if (NULL == crtc) {
 			continue;
 		}
-		TAILQ_FOREACH(view, &g_view_list, next) {
-			if (view->x == crtc->x && view->y == crtc->y) {
-				/* Clone, save min dimensions. */
-				view->width = MIN(view->width, crtc->width);
-				view->height = MIN(view->height,
-				    crtc->height);
-				break;
-			}
-		}
-		if (TAILQ_END(&g_view_list) == view) {
-			view = malloc(sizeof *view);
-			view->x = crtc->x;
-			view->y = crtc->y;
-			view->width = crtc->width;
-			view->height = crtc->height;
-			TAILQ_INSERT_TAIL(&g_view_list, view, next);
-		}
+		view = malloc(sizeof *view);
+		view->output = output_array[i];
+		view->x = crtc->x;
+		view->y = crtc->y;
+		view->width = crtc->width;
+		view->height = crtc->height;
+		TAILQ_INSERT_TAIL(&g_view_list, view, next);
 		free(crtc);
 	}
+	assert(!TAILQ_EMPTY(&g_view_list));
 	free(cookie_array);
 	free(res);
-	assert(!TAILQ_EMPTY(&g_view_list));
+	/* Put the primary output first. */
+	primary = xcb_randr_get_output_primary_reply(g_conn,
+	    xcb_randr_get_output_primary(g_conn, g_root), NULL);
+	TAILQ_FOREACH(view, &g_view_list, next) {
+		if (primary->output == view->output) {
+			break;
+		}
+	}
+	free(primary);
+	if (TAILQ_END(&g_view_list) != view) {
+		TAILQ_REMOVE(&g_view_list, view, next);
+		TAILQ_INSERT_HEAD(&g_view_list, view, next);
+	}
 	bar_reset();
 }
 
@@ -1757,8 +1764,8 @@ main()
 	}
 
 	/* Furnish existing windows, and reuse persisting info. */
-	if ((tree_reply = xcb_query_tree_reply(g_conn, xcb_query_tree(g_conn,
-	    g_root), NULL))) {
+	if (NULL != (tree_reply = xcb_query_tree_reply(g_conn,
+	    xcb_query_tree(g_conn, g_root), NULL))) {
 		char line[80], *p;
 		int j[10];
 		xcb_window_t *w;
@@ -1793,19 +1800,18 @@ main()
 			}
 			if (XCB_NONE != focus_id) {
 				g_focus = client_get(focus_id, NULL);
+				client_focus(g_focus, 1, 1);
 			}
 			fclose(file);
 		}
 		for (i = 0; num > i; ++i) {
-			if (XCB_NONE != w[i] &&
-			    NULL == client_get(w[i], NULL)) {
+			if (XCB_NONE != w[i]) {
 				client_add(w[i]);
 			}
 		}
 		free(tree_reply);
 		action_furnish(NULL);
 	}
-	client_focus(NULL, 1, 1);
 
 	/* Bar. */
 	root_name_update();
