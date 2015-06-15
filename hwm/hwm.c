@@ -19,6 +19,7 @@
  * Better client placement with fudge (mm, fudge).
  * Open windows on same workspace as potential parent.
  * Warp pointer on alt-tab, make it hidden as config.
+ * Fix funny placement/focus when opening a web-link in ffox.
  */
 
 #include <sys/queue.h>

@@ -4,8 +4,10 @@
 
 ac_path=/sys/class/power_supply/ACAD
 bat_path=/sys/class/power_supply/BAT1
+hdmi_path=/sys/class/drm/card0-HDMI-A-1
 
 last_ac_adapter=-1
+last_hdmi_status=0
 
 while true
 do
@@ -14,6 +16,13 @@ do
 	then
 		hacpi_events.sh ac_adapter 0 0 $cur_ac_adapter
 		last_ac_adapter=$cur_ac_adapter
+	fi
+
+	cur_hdmi_status=`cat $hdmi_path/status`
+	if [ "x$last_hdmi_status" != "x$cur_hdmi_status" ]
+	then
+		hacpi_hdmi.sh $cur_hdmi_status
+		last_hdmi_status=$cur_hdmi_status
 	fi
 
 	alarm=`cat $bat_path/alarm`
