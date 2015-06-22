@@ -2,13 +2,14 @@ PREFIX=~/opt
 
 CC=ccache gcc
 
-CFLAGS:=-ansi -ggdb -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wuninitialized
-LDFLAGS:=`pkg-config --libs xcb-icccm xcb-randr`
+CPPFLAGS:=-I/usr/local/include `pkg-config --cflags xcb`
+CFLAGS:=-ansi -ggdb -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow #-Wuninitialized
+LDFLAGS:=`pkg-config --libs xcb-icccm xcb-keysyms xcb-randr` -L/usr/local/lib -liconv
 
 all: hwm
 
 hwm: hwm.c Makefile
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
 	rm -f hwm

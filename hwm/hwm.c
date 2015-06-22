@@ -38,7 +38,9 @@
 #include <xcb/xcb.h>
 #include <xcb/xcb_event.h>
 #include <xcb/xcb_icccm.h>
+#include <xcb/xcb_keysyms.h>
 #include <X11/cursorfont.h>
+#include <X11/keysym.h>
 
 #define CONVERGE(op, ref, test, cur) do {\
 	if (ref op test && test op cur) {\
@@ -116,7 +118,7 @@ struct ButtonBind {
 	void	(*action)(struct Arg const *);
 };
 struct KeyBind {
-	int	code;
+	xcb_keysym_t	keysym;
 	int	state;
 	void	(*action)(struct Arg const *);
 	struct	Arg const arg;
@@ -205,33 +207,33 @@ static char const *c_workspace_label[WORKSPACE_NUM] = {
 static char const *c_uxterm[] = {"uxterm", NULL};
 static char const *c_dmenu[] = { "dmenu_run", "-i", "-fn", FONT_FACE, "-nb",
 	BAR_BG, "-nf", BAR_FG, "-sb", BAR_FG, "-sf", BAR_BG, NULL};
-#define BIND_WORKSPACE(code, id) \
-	{code, MOD_MASK1, action_workspace_select, {id, NULL}},\
-	{code, MOD_MASK2, action_client_relocate, {id, NULL}}
-#define BIND_CLIENT_DIR(code, dir) \
-	{code, MOD_MASK1, action_client_jump, {dir, NULL}},\
-	{code, MOD_MASK2, action_client_expand, {dir, NULL}},\
-	{code, MOD_MASK3, action_client_grow, {dir, NULL}}
+#define BIND_WORKSPACE(keysym, id) \
+	{keysym, MOD_MASK1, action_workspace_select, {id, NULL}},\
+	{keysym, MOD_MASK2, action_client_relocate, {id, NULL}}
+#define BIND_CLIENT_DIR(keysym, dir) \
+	{keysym, MOD_MASK1, action_client_jump, {dir, NULL}},\
+	{keysym, MOD_MASK2, action_client_expand, {dir, NULL}},\
+	{keysym, MOD_MASK3, action_client_grow, {dir, NULL}}
 static struct KeyBind c_key_bind[] = {
-	{24, MOD_MASK2, action_quit, {RUN_QUIT, NULL}},
-	{38, MOD_MASK2, action_quit, {RUN_RESTART, NULL}},
-	{53, MOD_MASK2, action_kill, {0, NULL}},
-	BIND_WORKSPACE(25, 0),
-	BIND_WORKSPACE(26, 1),
-	BIND_WORKSPACE(27, 2),
-	BIND_WORKSPACE(39, 3),
-	BIND_WORKSPACE(40, 4),
-	BIND_WORKSPACE(41, 5),
-	BIND_CLIENT_DIR(111, DIR_NORTH),
-	BIND_CLIENT_DIR(113, DIR_WEST),
-	BIND_CLIENT_DIR(114, DIR_EAST),
-	BIND_CLIENT_DIR(116, DIR_SOUTH),
-	{65, MOD_MASK1, action_client_maximize, {MAX_BOTH, NULL}},
-	{65, MOD_MASK2, action_client_maximize, {MAX_VERT, NULL}},
-	{23, MOD_MASK1, action_client_browse, {0, NULL}},
-	{58, MOD_MASK1, action_furnish, {0, NULL}},
-	{38, MOD_MASK1, action_exec, {0, c_uxterm}},
-	{28, MOD_MASK1, action_exec, {0, c_dmenu}}
+	{XK_q, MOD_MASK2, action_quit, {RUN_QUIT, NULL}},
+	{XK_a, MOD_MASK2, action_quit, {RUN_RESTART, NULL}},
+	{XK_x, MOD_MASK2, action_kill, {0, NULL}},
+	BIND_WORKSPACE(XK_w, 0),
+	BIND_WORKSPACE(XK_f, 1),
+	BIND_WORKSPACE(XK_p, 2),
+	BIND_WORKSPACE(XK_r, 3),
+	BIND_WORKSPACE(XK_s, 4),
+	BIND_WORKSPACE(XK_t, 5),
+	BIND_CLIENT_DIR(XK_Up, DIR_NORTH),
+	BIND_CLIENT_DIR(XK_Left, DIR_WEST),
+	BIND_CLIENT_DIR(XK_Right, DIR_EAST),
+	BIND_CLIENT_DIR(XK_Down, DIR_SOUTH),
+	{XK_space, MOD_MASK1, action_client_maximize, {MAX_BOTH, NULL}},
+	{XK_space, MOD_MASK2, action_client_maximize, {MAX_VERT, NULL}},
+	{XK_Tab, MOD_MASK1, action_client_browse, {0, NULL}},
+	{XK_m, MOD_MASK1, action_furnish, {0, NULL}},
+	{XK_a, MOD_MASK1, action_exec, {0, c_uxterm}},
+	{XK_g, MOD_MASK1, action_exec, {0, c_dmenu}}
 };
 static struct ButtonBind c_button_bind[] = {
 	{CLICK_WORKSPACE, 1, 0, action_workspace_select},
@@ -249,6 +251,7 @@ static EventHandler g_event_handler[EVENT_MAX];
 static xcb_connection_t *g_conn;
 static xcb_screen_t *g_screen;
 static iconv_t g_iconv;
+static xcb_key_symbols_t *g_key_symbols;
 static xcb_drawable_t g_root;
 static struct String g_root_name;
 static int g_is_root_urgent;
@@ -293,6 +296,7 @@ action_client_browse(struct Arg const *const a_arg)
 	    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
 	xcb_flush(g_conn);
 	for (do_browse = 1; do_browse;) {
+		xcb_keysym_t keysym;
 		xcb_generic_event_t *event;
 		xcb_key_press_event_t const *kp;
 
@@ -300,9 +304,11 @@ action_client_browse(struct Arg const *const a_arg)
 			continue;
 		}
 		kp = (xcb_key_press_event_t const *)event;
+		keysym = xcb_key_symbols_get_keysym(g_key_symbols, kp->detail,
+		    0);
 		switch (XCB_EVENT_RESPONSE_TYPE(event)) {
 			case XCB_KEY_PRESS:
-				if (23 == kp->detail) {
+				if (XK_Tab == keysym) {
 					if (!(c = TAILQ_NEXT(c, next))) {
 						c = TAILQ_FIRST(
 						    &g_client_list[
@@ -314,8 +320,8 @@ action_client_browse(struct Arg const *const a_arg)
 				}
 				break;
 			case XCB_KEY_RELEASE:
-				do_browse = 133 != kp->detail && 134 !=
-				    kp->detail;
+				do_browse = XK_Super_L != keysym && XK_Super_R
+				    != keysym;
 				break;
 			case XCB_EXPOSE:
 			case XCB_MAP_REQUEST:
@@ -435,8 +441,8 @@ action_client_jump(struct Arg const *const a_arg)
 				break;
 		}
 	}
-	(DIR_EAST == a_arg->i || DIR_WEST == a_arg->i) ? (g_focus->x = new)
-	    : (g_focus->y = new);
+	(DIR_EAST == a_arg->i || DIR_WEST == a_arg->i) ? (g_focus->x = new) :
+	    (g_focus->y = new);
 	client_move(g_focus, VISIBLE);
 	xcb_warp_pointer(g_conn, XCB_NONE, g_focus->window, 0, 0, 0, 0,
 	    g_focus->width / 2, g_focus->height / 2);
@@ -1365,11 +1371,16 @@ event_handle(xcb_generic_event_t const *const a_event)
 void
 event_key_press(xcb_key_press_event_t const *const a_event)
 {
+	xcb_keysym_t keysym;
 	struct KeyBind *bind;
 	size_t i;
 
+	keysym = xcb_key_symbols_get_keysym(g_key_symbols, a_event->detail,
+	    0);
+printf("%d->%d %d\n", a_event->detail, keysym, a_event->state);
+fflush(stdout);
 	for (i = 0, bind = c_key_bind; LENGTH(c_key_bind) > i; ++i, ++bind) {
-		if (bind->code == a_event->detail &&
+		if (bind->keysym == keysym &&
 		    bind->state == a_event->state) {
 			bind->action(&bind->arg);
 		}
@@ -1667,8 +1678,8 @@ main()
 	if (SIG_ERR == signal(SIGCHLD, SIG_IGN)) {
 		err(EXIT_FAILURE, "SIGCHLD=SIG_IGN failed");
 	}
-	if ((iconv_t)-1 == (g_iconv = iconv_open("UCS-2BE", "UTF8"))) {
-		err(EXIT_FAILURE, "Could not open iconv(UCS-2BE, UTF8).");
+	if ((iconv_t)-1 == (g_iconv = iconv_open("UCS-2BE", "UTF-8"))) {
+		err(EXIT_FAILURE, "Could not open iconv(UCS-2BE, UTF-8).");
 	}
 	for (i = 0; WORKSPACE_NUM > i; ++i) {
 		string_convert(&g_workspace_label[i], c_workspace_label[i],
@@ -1732,6 +1743,8 @@ main()
 	    xcb_change_window_attributes_checked, (g_conn, g_root,
 	    XCB_CW_EVENT_MASK | XCB_CW_CURSOR, g_values));
 
+	g_key_symbols = xcb_key_symbols_alloc(g_conn);
+
 	/* Atoms. */
 	g_WM_DELETE_WINDOW = atom_get("WM_DELETE_WINDOW");
 	g_WM_PROTOCOLS = atom_get("WM_PROTOCOLS");
@@ -1763,8 +1776,13 @@ main()
 	g_color_urgent2_fg = color_get(URGENT2_FG);
 
 	for (i = 0, bind = c_key_bind; LENGTH(c_key_bind) > i; ++i, ++bind) {
-		xcb_grab_key(g_conn, 1, g_root, bind->state, bind->code,
+		xcb_keycode_t *keycode_list;
+
+		keycode_list = xcb_key_symbols_get_keycode(g_key_symbols,
+		    bind->keysym);
+		xcb_grab_key(g_conn, 1, g_root, bind->state, *keycode_list,
 		    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+		free(keycode_list);
 	}
 
 	randr_update();
