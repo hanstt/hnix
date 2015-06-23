@@ -1,10 +1,21 @@
-CFLAGS:=-ansi -ggdb -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow
+PREFIX?=~/opt
+
+CFLAGS:=-ansi -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wstrict-prototypes
 
 .PHONY: all
 all: pkg_wipe
 
 pkg_wipe: pkg_wipe.c Makefile
-	$(CC) $(CFLAGS) -o $@ pkg_wipe.c
+	gcc $(CFLAGS) -o $@ pkg_wipe.c
+
+.PHONY: install
+install:
+	mkdir -p $(PREFIX)/bin
+	install pkg_wipe $(PREFIX)/bin
+
+.PHONY: uninstall
+uninstall:
+	rm -f $(PREFIX)/bin/pkg_wipe
 
 .PHONY: clean
 clean:

@@ -1,15 +1,15 @@
 Hans' *nix things
 =================
 A small collection of small scripts and programs that I have written to make
-life really comfortable. As long as one uses a reasonable Linux distro like
-Slackware or OpenBSD, otherwise eternal misery and pain shall forever... You
-get the idea.
+my life comfortable. As long as one uses a reasonable Linux distro like
+Slackware or OpenBSD.
 
 
 hacpi
 -----
 ACPI scripts for handling Linux ACPI thingamajigs, events and polling, for
-when events don't work, mainly in order to save battery time.
+when events don't work, mainly in order to save battery time. Other than what
+was stated in the intro.
 
 
 hlinuxbat
@@ -23,6 +23,12 @@ hobsdbat
 I'll let you figure this one out yourself.
 
 
+hobsdpkg
+--------
+Various OpenBSD package tools which I like to use. Currently only pkg_wipe,
+which iteratively asks for what leaf packages can be removed.
+
+
 hpwd
 ----
 Fetches the present working directory and prints it with up to at most 2
@@ -33,6 +39,6 @@ for the bash prompt, e.g.:
 
 hwm
 ---
-My little xcb-based window manager, 100% rewritten variant of dwm. Has its own
-README, because although I do what I can to keep it simple and small, it is
-still large. Figures.
+My little xcb-based window manager, based on dwm but 100% rewritten. Has its
+own README, because although I do what I can to keep it simple and small, it
+is still large.

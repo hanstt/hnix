@@ -5,7 +5,7 @@ TARGET=hpwd
 all: $(TARGET)
 
 $(TARGET): main.c
-	gcc -O2 -pedantic-errors -Wall -Werror -Wextra -Wshadow -o $@ main.c
+	gcc -ansi -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wstrict-prototypes -o $@ main.c
 
 .PHONY: install
 install:

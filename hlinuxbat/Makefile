@@ -1,21 +1,21 @@
 PREFIX?=~/opt
+TARGET=hbat
 
 .PHONY: all
-all: hpower
+all: $(TARGET)
 
-hpower: main.c
+$(TARGET): main.c
 	gcc -D_BSD_SOURCE -ansi -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wstrict-prototypes -o $@ $<
 
 .PHONY: install
 install:
 	mkdir -p $(PREFIX)/bin
-	cp -f hpower $(PREFIX)/bin
-	chmod 755 $(PREFIX)/bin/hpower
+	install $(TARGET) $(PREFIX)/bin
 
 .PHONY: uninstall
 uninstall:
-	rm -f $(PREFIX)/bin/hpower
+	rm -f $(PREFIX)/bin/$(TARGET)
 
 .PHONY: clean
 clean:
-	rm -f hpower
+	rm -f $(TARGET)

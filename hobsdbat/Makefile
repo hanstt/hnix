@@ -1,11 +1,11 @@
 PREFIX?=~/opt
-TARGET=hpower
+TARGET=hbat
 
 .PHONY: all
 all: $(TARGET)
 
 $(TARGET): main.c
-	gcc -D_BSD_SOURCE -ansi -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wstrict-prototypes -o $@ main.c
+	gcc -ansi -O2 -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow -Wstrict-prototypes -o $@ main.c
 
 .PHONY: install
 install:

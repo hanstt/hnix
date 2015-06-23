@@ -1,7 +1,8 @@
 /*
- * Copyright (c) 2014-2015 Hans Toshihide Törnqvist <hans.tornqvist@gmail.com>
+ * Copyright (c) 2014, 2015 Hans Toshihide Törnqvist
+ *                          <hans.tornqvist@gmail.com>
  *
- * Permission to use, copy, modify, and distribute this software for any
+ * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
  * copyright notice and this permission notice appear in all copies.
  *
@@ -18,7 +19,6 @@
  * TODO:
  * Better client placement with fudge (mm, fudge).
  * Open windows on same workspace as potential parent.
- * Warp pointer on alt-tab, make it hidden as config.
  * Fix funny placement/focus when opening a web-link in ffox.
  */
 
@@ -41,6 +41,7 @@
 #include <xcb/xcb_keysyms.h>
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
+#include <hutils/macros.h>
 
 #define CONVERGE(op, ref, test, cur) do {\
 	if (ref op test && test op cur) {\
@@ -59,12 +60,9 @@
 		    error_->resource_id, error_->minor_code,\
 		    error_->major_code);\
 		free(error_);\
-		exit(1);\
+		exit(EXIT_FAILURE);\
 	}\
 } while (0)
-#define LENGTH(arr) (sizeof arr / sizeof arr[0])
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define NAME_LEN 80
 #define SNAP(op, ref, test, margin) do {\
 	if (ref op test && test op margin) {\
@@ -282,7 +280,7 @@ static uint8_t g_randr_evbase;
 void
 action_client_browse(struct Arg const *const a_arg)
 {
-	struct Client *c;
+	struct Client *c, *prev;
 	int do_browse;
 
 	(void)a_arg;
@@ -290,16 +288,22 @@ action_client_browse(struct Arg const *const a_arg)
 	    TAILQ_NEXT(TAILQ_FIRST(&g_client_list[g_workspace_cur]), next))) {
 		return;
 	}
-	client_focus(c, 0, 1);
-	bar_draw();
+	prev = NULL;
 	xcb_grab_keyboard(g_conn, 0, g_root, XCB_CURRENT_TIME,
 	    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
-	xcb_flush(g_conn);
 	for (do_browse = 1; do_browse;) {
 		xcb_keysym_t keysym;
 		xcb_generic_event_t *event;
 		xcb_key_press_event_t const *kp;
 
+		if (c != prev) {
+			client_focus(c, 0, 1);
+			xcb_warp_pointer(g_conn, XCB_NONE, c->window, 0, 0, 0,
+			    0, c->width / 2, c->height / 2);
+			bar_draw();
+			xcb_flush(g_conn);
+			prev = c;
+		}
 		if (!(event = xcb_poll_for_event(g_conn))) {
 			continue;
 		}
@@ -314,9 +318,6 @@ action_client_browse(struct Arg const *const a_arg)
 						    &g_client_list[
 						    g_workspace_cur]);
 					}
-					client_focus(c, 0, 1);
-					bar_draw();
-					xcb_flush(g_conn);
 				}
 				break;
 			case XCB_KEY_RELEASE:
