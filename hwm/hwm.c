@@ -19,7 +19,6 @@
  * TODO:
  * Better client placement with fudge (mm, fudge).
  * Open windows on same workspace as potential parent.
- * Fix funny placement/focus when opening a web-link in ffox.
  */
 
 #include <sys/queue.h>
@@ -47,7 +46,7 @@
 	if (ref op test && test op cur) {\
 		cur = test;\
 	}\
-} while (0)
+} HUTILS_COND(while, 0)
 #define EVENT_MAX 30
 #define HEIGHT(c) (1 + (c)->height + 1)
 #define HWM_XCB_CHECKED(msg, func, args) do {\
@@ -62,13 +61,13 @@
 		free(error_);\
 		exit(EXIT_FAILURE);\
 	}\
-} while (0)
+} HUTILS_COND(while, 0)
 #define NAME_LEN 80
 #define SNAP(op, ref, test, margin) do {\
 	if (ref op test && test op margin) {\
 		test = ref;\
 	}\
-} while (0)
+} HUTILS_COND(while, 0)
 #define VIEW_BOTTOM(v) ((v)->y + (v)->height)
 #define VIEW_LEFT(v) ((v)->x)
 #define VIEW_RIGHT(v) ((v)->x + (v)->width)
@@ -122,59 +121,67 @@ struct KeyBind {
 	struct	Arg const arg;
 };
 
-static void		action_client_browse(struct Arg const *);
-static void		action_client_expand(struct Arg const *);
-static void		action_client_grow(struct Arg const *);
-static void		action_client_jump(struct Arg const *);
-static void		action_client_maximize(struct Arg const *);
-static void		action_client_move(struct Arg const *);
-static void		action_client_relocate(struct Arg const *);
-static void		action_client_resize(struct Arg const *);
-static void		action_exec(struct Arg const *);
-static void		action_furnish(struct Arg const *);
-static void		action_kill(struct Arg const *);
-static void		action_quit(struct Arg const *);
-static void		action_workspace_select(struct Arg const *);
-static xcb_atom_t	atom_get(char const *);
-static void		bar_draw(void);
-static void		bar_reset(void);
-static void		button_grab(struct Client *);
-static struct Client	*client_add(xcb_window_t);
-static struct Client	*client_add_details(xcb_window_t, int const *);
-static void		client_delete(struct Client *);
-static void		client_focus(struct Client *, int, int);
-static struct Client	*client_get(xcb_window_t, int *);
-static void		client_move(struct Client *, enum Visibility);
-static void		client_name_update(struct Client *);
-static void		client_place(struct Client *);
-static void		client_resize(struct Client *, int);
-static void		client_snap_dimension(struct Client *);
-static void		client_snap_position(struct Client *);
-static uint32_t		color_get(char const *);
-static xcb_cursor_t	cursor_get(xcb_font_t, int);
-static void		event_button_press(xcb_button_press_event_t const *);
-static void		event_configure_notify(xcb_configure_notify_event_t
-    const *);
-static void		event_configure_request(xcb_configure_request_event_t
-    const *);
-static void		event_destroy_notify(xcb_destroy_notify_event_t const
+static void			action_client_browse(struct Arg const *);
+static void			action_client_expand(struct Arg const *);
+static void			action_client_grow(struct Arg const *);
+static void			action_client_jump(struct Arg const *);
+static void			action_client_maximize(struct Arg const *);
+static void			action_client_move(struct Arg const *);
+static void			action_client_relocate(struct Arg const *);
+static void			action_client_resize(struct Arg const *);
+static void			action_exec(struct Arg const *);
+static void			action_furnish(struct Arg const *);
+static void			action_kill(struct Arg const *);
+static void			action_quit(struct Arg const *);
+static void			action_workspace_select(struct Arg const *);
+static xcb_atom_t		atom_get(char const *);
+static void			bar_draw(void);
+static void			bar_reset(void);
+static void			button_grab(struct Client *);
+static struct Client		*client_add(xcb_window_t);
+static struct Client		*client_add_details(xcb_window_t, int const
     *);
-static void		event_enter_notify(xcb_enter_notify_event_t const *);
-static void		event_expose(xcb_expose_event_t const *);
-static void		event_handle(xcb_generic_event_t const *);
-static void		event_key_press(xcb_key_press_event_t const *);
-static void		event_map_request(xcb_map_request_event_t const *);
-static void		event_property_notify(xcb_property_notify_event_t
+static void			client_delete(struct Client *);
+static void			client_focus(struct Client *, int, int);
+static struct Client		*client_get(xcb_window_t, int *);
+static void			client_move(struct Client *, enum Visibility);
+static void			client_name_update(struct Client *);
+static void			client_place(struct Client *);
+static void			client_resize(struct Client *, int);
+static void			client_snap_dimension(struct Client *);
+static void			client_snap_position(struct Client *);
+static uint32_t			color_get(char const *);
+static xcb_cursor_t		cursor_get(xcb_font_t, int);
+static void			event_button_press(xcb_button_press_event_t
     const *);
-static void		event_unmap_notify(xcb_unmap_notify_event_t const *);
-static void		my_exit(void);
-static void		randr_update(void);
-static void		root_name_update(void);
-static void		string_convert(struct String *, char const *, size_t);
-static int		text_draw(struct String const *, int, int, int, int);
-static int		text_width(struct String const *);
-static void		view_clear(void);
-static struct View	*view_find(int, int);
+static void			event_configure_notify(
+    xcb_configure_notify_event_t const *);
+static void			event_configure_request(
+    xcb_configure_request_event_t const *);
+static void			event_destroy_notify(
+    xcb_destroy_notify_event_t const *);
+static void			event_enter_notify(xcb_enter_notify_event_t
+    const *);
+static void			event_expose(xcb_expose_event_t const *);
+static void			event_handle(xcb_generic_event_t const *);
+static void			event_key_press(xcb_key_press_event_t const
+    *);
+static void			event_map_request(xcb_map_request_event_t
+    const *);
+static void			event_property_notify(
+    xcb_property_notify_event_t const *);
+static void			event_unmap_notify(xcb_unmap_notify_event_t
+    const *);
+static void			my_exit(void);
+static void			randr_update(void);
+static void			root_name_update(void);
+static void			string_convert(struct String *, char const *,
+    size_t);
+static int			text_draw(struct String const *, int, int,
+    int, int);
+static int			text_width(struct String const *);
+static void			view_clear(void);
+static struct View const	*view_find(int, int);
 
 /* Config { */
 
@@ -339,7 +346,7 @@ action_client_browse(struct Arg const *const a_arg)
 void
 action_client_expand(struct Arg const *const a_arg)
 {
-	struct View *view;
+	struct View const *view;
 	struct Client *c;
 	int new, test;
 
@@ -403,7 +410,7 @@ action_client_grow(struct Arg const *const a_arg)
 void
 action_client_jump(struct Arg const *const a_arg)
 {
-	struct View *view;
+	struct View const *view;
 	struct Client *c;
 	int new, test;
 
@@ -452,7 +459,7 @@ action_client_jump(struct Arg const *const a_arg)
 void
 action_client_maximize(struct Arg const *const a_arg)
 {
-	struct View *view;
+	struct View const *view;
 	enum Maximize const c_toggle = a_arg->i;
 	enum Maximize result;
 
@@ -743,7 +750,7 @@ void
 bar_draw()
 {
 	xcb_rectangle_t rect;
-	struct View *view;
+	struct View const *view;
 	struct Client *c;
 	int i, x;
 
@@ -839,7 +846,7 @@ client_add_details(xcb_window_t const a_window, int const *const a_data)
 	xcb_get_window_attributes_reply_t *attr;
 	xcb_get_geometry_reply_t *geom;
 	xcb_query_pointer_reply_t *query;
-	struct View *view;
+	struct View const *view;
 	struct Client *c;
 	int workspace;
 
@@ -1029,7 +1036,7 @@ client_name_update(struct Client *const a_client)
 void
 client_place(struct Client *const a_client)
 {
-	struct View *view;
+	struct View const *view;
 	int best_score = 1e9, best_touching, best_x = 0, best_y =
 	    g_font_height, x, y = g_font_height - 1;
 
@@ -1160,7 +1167,7 @@ printf("Aspect = %d:%d .. %dx%d\n",
 void
 client_snap_dimension(struct Client *const a_client)
 {
-	struct View *view;
+	struct View const *view;
 	struct Client const *sibling;
 	int ref;
 
@@ -1183,7 +1190,7 @@ client_snap_dimension(struct Client *const a_client)
 void
 client_snap_position(struct Client *const a_client)
 {
-	struct View *view;
+	struct View const *view;
 	struct Client const *sibling;
 	int ref;
 
@@ -1247,7 +1254,7 @@ event_button_press(xcb_button_press_event_t const *const a_event)
 	size_t i;
 
 	if (a_event->event == g_bar) {
-		struct View *view;
+		struct View const *view;
 		int x = 0;
 
 		view = view_find(a_event->root_x, a_event->root_y);
@@ -1284,6 +1291,7 @@ event_configure_notify(xcb_configure_notify_event_t const *const a_event)
 	struct Client *c;
 
 	if (NULL == (c = client_get(a_event->window, NULL))) {
+		/* TODO: check for override redirect? */
 		client_add(a_event->window);
 	} else if (a_event->override_redirect) {
 		client_delete(c);
@@ -1294,7 +1302,6 @@ void
 event_configure_request(xcb_configure_request_event_t const *const a_event)
 {
 	struct Client *c;
-	uint16_t mask;
 
 	if (NULL != (c = client_get(a_event->window, NULL))) {
 		if (XCB_CONFIG_WINDOW_WIDTH & a_event->value_mask) {
@@ -1307,9 +1314,9 @@ event_configure_request(xcb_configure_request_event_t const *const a_event)
 		    a_event->value_mask) {
 			client_resize(c, 0);
 		}
-		client_place(c);
 	} else {
 		uint32_t *p;
+		uint16_t mask;
 
 		p = g_values;
 		mask = (XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
@@ -1364,7 +1371,7 @@ event_handle(xcb_generic_event_t const *const a_event)
 
 	if (c_i == g_randr_evbase + XCB_RANDR_SCREEN_CHANGE_NOTIFY) {
 		randr_update();
-	} else if (EVENT_MAX > c_i && g_event_handler[c_i]) {
+	} else if (EVENT_MAX > c_i && NULL != g_event_handler[c_i]) {
 		g_event_handler[c_i](a_event);
 	}
 }
@@ -1378,8 +1385,6 @@ event_key_press(xcb_key_press_event_t const *const a_event)
 
 	keysym = xcb_key_symbols_get_keysym(g_key_symbols, a_event->detail,
 	    0);
-printf("%d->%d %d\n", a_event->detail, keysym, a_event->state);
-fflush(stdout);
 	for (i = 0, bind = c_key_bind; LENGTH(c_key_bind) > i; ++i, ++bind) {
 		if (bind->keysym == keysym &&
 		    bind->state == a_event->state) {
@@ -1638,10 +1643,10 @@ view_clear()
 	}
 }
 
-struct View *
+struct View const *
 view_find(int const a_x, int const a_y)
 {
-	struct View *view;
+	struct View const *view;
 
 	TAILQ_FOREACH(view, &g_view_list, next) {
 		if (view->x <= a_x && a_x < view->x + view->width &&
