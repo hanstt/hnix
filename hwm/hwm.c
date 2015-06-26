@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014, 2015 Hans Toshihide Törnqvist
- *                          <hans.tornqvist@gmail.com>
+ * Copyright (c) 2014-2015 Hans Toshihide Törnqvist <hans.tornqvist@gmail.com>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -18,7 +17,7 @@
 /*
  * TODO:
  * Better client placement with fudge (mm, fudge).
- * Open windows on same workspace as potential parent.
+ * Open child windows on same workspace as parent and make urgent? Verify.
  */
 
 #include <sys/queue.h>
@@ -48,7 +47,7 @@
 	}\
 } HUTILS_COND(while, 0)
 #define EVENT_MAX 30
-#define HEIGHT(c) (1 + (c)->height + 1)
+#define HEIGHT(c) ((c)->height + 2 * (c)->border_width)
 #define HWM_XCB_CHECKED(msg, func, args) do {\
 	xcb_void_cookie_t cookie_;\
 	xcb_generic_error_t *error_;\
@@ -72,7 +71,7 @@
 #define VIEW_LEFT(v) ((v)->x)
 #define VIEW_RIGHT(v) ((v)->x + (v)->width)
 #define VIEW_TOP(v) ((v)->y)
-#define WIDTH(c) (1 + (c)->width + 1)
+#define WIDTH(c) ((c)->width + 2 * (c)->border_width)
 
 enum Click { CLICK_ROOT, CLICK_WORKSPACE, CLICK_STATUS, CLICK_CLIENT };
 enum JumpDirection { DIR_EAST, DIR_NORTH, DIR_WEST, DIR_SOUTH };
@@ -103,6 +102,7 @@ struct Client {
 	struct	String name;
 	int	x, y;
 	int	width, height;
+	int	border_width;
 	enum	Maximize maximize;
 	int	max_old_x, max_old_y;
 	int	max_old_width, max_old_height;
@@ -138,11 +138,11 @@ static xcb_atom_t		atom_get(char const *);
 static void			bar_draw(void);
 static void			bar_reset(void);
 static void			button_grab(struct Client *);
-static struct Client		*client_add(xcb_window_t);
-static struct Client		*client_add_details(xcb_window_t, int const
-    *);
+static struct Client		*client_add(xcb_window_t, xcb_window_t);
+static struct Client		*client_add_details(xcb_window_t,
+    xcb_window_t, int const *);
 static void			client_delete(struct Client *);
-static void			client_focus(struct Client *, int, int);
+static void			client_focus(struct Client *, int, int, int);
 static struct Client		*client_get(xcb_window_t, int *);
 static void			client_move(struct Client *, enum Visibility);
 static void			client_name_update(struct Client *);
@@ -304,14 +304,12 @@ action_client_browse(struct Arg const *const a_arg)
 		xcb_key_press_event_t const *kp;
 
 		if (c != prev) {
-			client_focus(c, 0, 1);
-			xcb_warp_pointer(g_conn, XCB_NONE, c->window, 0, 0, 0,
-			    0, c->width / 2, c->height / 2);
+			client_focus(c, 0, 1, 1);
 			bar_draw();
 			xcb_flush(g_conn);
 			prev = c;
 		}
-		if (!(event = xcb_poll_for_event(g_conn))) {
+		if (!(event = xcb_wait_for_event(g_conn))) {
 			continue;
 		}
 		kp = (xcb_key_press_event_t const *)event;
@@ -340,7 +338,7 @@ action_client_browse(struct Arg const *const a_arg)
 		free(event);
 	}
 	xcb_ungrab_keyboard(g_conn, XCB_CURRENT_TIME);
-	client_focus(c, 1, 0);
+	client_focus(c, 1, 0, 0);
 }
 
 void
@@ -530,8 +528,7 @@ action_client_move(struct Arg const *const a_arg)
 	for (do_move = 1; do_move;) {
 		xcb_motion_notify_event_t *motion;
 
-		event = xcb_poll_for_event(g_conn);
-		if (!event) {
+		if (!(event = xcb_wait_for_event(g_conn))) {
 			continue;
 		}
 		switch (XCB_EVENT_RESPONSE_TYPE(event)) {
@@ -569,7 +566,7 @@ action_client_relocate(struct Arg const *const a_arg)
 	TAILQ_REMOVE(&g_client_list[g_workspace_cur], g_focus, next);
 	TAILQ_INSERT_HEAD(&g_client_list[a_arg->i], g_focus, next);
 	client_move(g_focus, HIDDEN);
-	client_focus(NULL, 1, 0);
+	client_focus(NULL, 1, 0, 0);
 }
 
 void
@@ -592,7 +589,7 @@ action_client_resize(struct Arg const *const a_arg)
 	for (do_resize = 1; do_resize;) {
 		xcb_motion_notify_event_t *motion;
 
-		if (!(event = xcb_poll_for_event(g_conn))) {
+		if (!(event = xcb_wait_for_event(g_conn))) {
 			continue;
 		}
 		switch (XCB_EVENT_RESPONSE_TYPE(event)) {
@@ -728,7 +725,7 @@ action_workspace_select(struct Arg const *const a_arg)
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
 		client_move(c, VISIBLE);
 	}
-	client_focus(NULL, 1, 0);
+	client_focus(NULL, 1, 0, 0);
 }
 
 xcb_atom_t
@@ -833,15 +830,16 @@ button_grab(struct Client *const a_client)
 }
 
 struct Client *
-client_add(xcb_window_t const a_window)
+client_add(xcb_window_t const a_window, xcb_window_t const a_parent)
 {
 	int data = -1;
 
-	return client_add_details(a_window, &data);
+	return client_add_details(a_window, a_parent, &data);
 }
 
 struct Client *
-client_add_details(xcb_window_t const a_window, int const *const a_data)
+client_add_details(xcb_window_t const a_window, xcb_window_t const a_parent,
+    int const *const a_data)
 {
 	xcb_get_window_attributes_reply_t *attr;
 	xcb_get_geometry_reply_t *geom;
@@ -853,8 +851,9 @@ client_add_details(xcb_window_t const a_window, int const *const a_data)
 	if (a_window == g_root) {
 		return NULL;
 	}
-	if (NULL != (attr = xcb_get_window_attributes_reply(g_conn,
-	    xcb_get_window_attributes(g_conn, a_window), NULL))) {
+	attr = xcb_get_window_attributes_reply(g_conn,
+	    xcb_get_window_attributes(g_conn, a_window), NULL);
+	if (NULL != attr) {
 		if (XCB_MAP_STATE_VIEWABLE != attr->map_state ||
 		    attr->override_redirect) {
 			free(attr);
@@ -866,8 +865,8 @@ client_add_details(xcb_window_t const a_window, int const *const a_data)
 	geom = xcb_get_geometry_reply(g_conn, xcb_get_geometry(g_conn,
 	    a_window), NULL);
 	if (NULL == geom) {
-		fprintf(stderr, "client_add: Could not get geometry of window"
-		    " 0x%08x.\n", a_window);
+		fprintf(stderr, "client_add_details: Could not get geometry "
+		    "of window 0x%08x.\n", a_window);
 		return NULL;
 	}
 
@@ -887,22 +886,46 @@ client_add_details(xcb_window_t const a_window, int const *const a_data)
 	c->height = geom->height;
 	free(geom);
 	if (0 > a_data[0]) {
-		workspace = g_workspace_cur;
-		c->is_urgent = 0;
+		if (XCB_WINDOW_NONE != a_parent) {
+			/* TODO: Find parent workspace. */
+			for (workspace = 0; WORKSPACE_NUM > workspace;
+			    ++workspace) {
+				struct Client *rover;
+
+				TAILQ_FOREACH(rover, &g_client_list[
+				    workspace], next) {
+					if (rover->window == a_parent) {
+						goto found_parent;
+					}
+				}
+			}
+			workspace = g_workspace_cur;
+			/*
+			 * Parent is probably overriding, such megalomania
+			 * will result in "unnatural" behaviour.
+			 */
+		} else {
+			workspace = g_workspace_cur;
+		}
+found_parent:
+		g_do_bar_redraw = c->is_urgent = g_workspace_cur != workspace;
 		c->maximize = MAX_NOPE;
+		c->border_width = c->width != view->width || c->height !=
+		    view->height;
 		c->max_old_y = c->max_old_x = 0;
 		c->max_old_height = c->max_old_width = 0;
 		client_place(c);
 	} else {
 		workspace = a_data[0];
-		c->is_urgent = a_data[1];
+		g_do_bar_redraw = c->is_urgent = a_data[1];
 		c->x = a_data[2];
 		c->y = a_data[3];
 		c->maximize = a_data[4];
-		c->max_old_x = a_data[5];
-		c->max_old_y = a_data[6];
-		c->max_old_width = a_data[7];
-		c->max_old_height = a_data[8];
+		c->border_width = a_data[5];
+		c->max_old_x = a_data[6];
+		c->max_old_y = a_data[7];
+		c->max_old_width = a_data[8];
+		c->max_old_height = a_data[9];
 	}
 	TAILQ_INSERT_HEAD(&g_client_list[workspace], c, next);
 
@@ -911,9 +934,9 @@ client_add_details(xcb_window_t const a_window, int const *const a_data)
 	g_values[0] = g_color_border_unfocus;
 	g_values[1] = XCB_EVENT_MASK_ENTER_WINDOW |
 	    XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_PROPERTY_CHANGE;
-	    xcb_change_window_attributes(g_conn, a_window, XCB_CW_BORDER_PIXEL
-		| XCB_CW_EVENT_MASK, g_values);
-	g_values[0] = 1;
+	xcb_change_window_attributes(g_conn, a_window, XCB_CW_BORDER_PIXEL |
+	    XCB_CW_EVENT_MASK, g_values);
+	g_values[0] = c->border_width;
 	xcb_configure_window(g_conn, a_window, XCB_CONFIG_WINDOW_BORDER_WIDTH,
 	    g_values);
 
@@ -932,13 +955,13 @@ client_delete(struct Client *const a_client)
 	TAILQ_REMOVE(&g_client_list[g_workspace_cur], a_client, next);
 	free(a_client);
 	if (a_client == g_focus) {
-		client_focus(g_focus = NULL, 1, 0);
+		client_focus(g_focus = NULL, 1, 0, 0);
 	}
 }
 
 void
 client_focus(struct Client *const a_client, int const a_do_reorder, int const
-    a_do_raise)
+    a_do_raise, int const a_do_warp)
 {
 	xcb_icccm_wm_hints_t hints;
 
@@ -969,6 +992,10 @@ client_focus(struct Client *const a_client, int const a_do_reorder, int const
 		g_values[0] = XCB_STACK_MODE_TOP_IF;
 		xcb_configure_window(g_conn, g_focus->window,
 		    XCB_CONFIG_WINDOW_STACK_MODE, g_values);
+	}
+	if (a_do_warp) {
+		xcb_warp_pointer(g_conn, XCB_NONE, g_focus->window, 0, 0, 0,
+		    0, g_focus->width / 2, g_focus->height / 2);
 	}
 	g_values[0] = g_color_border_focus;
 	xcb_change_window_attributes(g_conn, g_focus->window,
@@ -1154,9 +1181,10 @@ client_resize(struct Client *const a_client, int const a_do_round)
 		a_client->height = MIN(a_client->height, hints->max_height);
 	}
 	if (XCB_ICCCM_SIZE_HINT_P_ASPECT & hints->flags) {
-printf("Aspect = %d:%d .. %dx%d\n",
+printf("Aspect = %d:%d .. %d:%d\n",
     hints->min_aspect_num, hints->min_aspect_den,
     hints->max_aspect_num, hints->max_aspect_den);
+fflush(stdout);
 	}
 	g_values[0] = a_client->width;
 	g_values[1] = a_client->height;
@@ -1271,7 +1299,7 @@ event_button_press(xcb_button_press_event_t const *const a_event)
 		}
 	} else if (NULL != (c = client_get(a_event->event, NULL))) {
 		click = CLICK_CLIENT;
-		client_focus(c, 1, 1);
+		client_focus(c, 1, 1, 0);
 	}
 	g_button_press_window = a_event->event;
 	g_button_press_x = a_event->root_x;
@@ -1290,10 +1318,10 @@ event_configure_notify(xcb_configure_notify_event_t const *const a_event)
 {
 	struct Client *c;
 
-	if (NULL == (c = client_get(a_event->window, NULL))) {
-		/* TODO: check for override redirect? */
-		client_add(a_event->window);
-	} else if (a_event->override_redirect) {
+	c = client_get(a_event->window, NULL);
+	if (NULL == c && !a_event->override_redirect) {
+		client_add(a_event->window, XCB_WINDOW_NONE);
+	} else if (NULL != c && a_event->override_redirect) {
 		client_delete(c);
 	}
 }
@@ -1303,7 +1331,8 @@ event_configure_request(xcb_configure_request_event_t const *const a_event)
 {
 	struct Client *c;
 
-	if (NULL != (c = client_get(a_event->window, NULL))) {
+	c = client_get(a_event->window, NULL);
+	if (NULL != c) {
 		if (XCB_CONFIG_WINDOW_WIDTH & a_event->value_mask) {
 			c->width = a_event->width;
 		}
@@ -1352,7 +1381,7 @@ event_enter_notify(xcb_enter_notify_event_t const *const a_event)
 
 	if (NULL != (c = client_get(a_event->event, &workspace)) &&
 	    g_workspace_cur == workspace) {
-		client_focus(c, 1, 0);
+		client_focus(c, 1, 0, 0);
 	}
 }
 
@@ -1399,10 +1428,11 @@ event_map_request(xcb_map_request_event_t const *const a_event)
 	struct Client *c;
 
 	xcb_map_window(g_conn, a_event->window);
-	if (NULL != (c = NULL != (c = client_get(a_event->window, NULL)) ? c :
-	    client_add(a_event->window))) {
-		client_focus(c, 1, 1);
+	c = client_get(a_event->window, NULL);
+	if (NULL == c) {
+		c = client_add(a_event->window, a_event->parent);
 	}
+	client_focus(c, 1, 1, 1);
 }
 
 void
@@ -1496,7 +1526,9 @@ randr_update()
 	len = xcb_randr_get_screen_resources_current_outputs_length(res);
 	output_array = xcb_randr_get_screen_resources_current_outputs(res);
 
-	/* Send requests and handle them one at a time. */
+	primary = xcb_randr_get_output_primary_reply(g_conn,
+	    xcb_randr_get_output_primary(g_conn, g_root), NULL);
+
 	cookie_array = malloc(len * sizeof *cookie_array);
 	for (i = 0; len > i; ++i) {
 		cookie_array[i] = xcb_randr_get_output_info(g_conn,
@@ -1528,25 +1560,17 @@ randr_update()
 		view->y = crtc->y;
 		view->width = crtc->width;
 		view->height = crtc->height;
-		TAILQ_INSERT_TAIL(&g_view_list, view, next);
+		if (primary->output == view->output) {
+			TAILQ_INSERT_HEAD(&g_view_list, view, next);
+		} else {
+			TAILQ_INSERT_TAIL(&g_view_list, view, next);
+		}
 		free(crtc);
 	}
 	assert(!TAILQ_EMPTY(&g_view_list));
 	free(cookie_array);
 	free(res);
-	/* Put the primary output first. */
-	primary = xcb_randr_get_output_primary_reply(g_conn,
-	    xcb_randr_get_output_primary(g_conn, g_root), NULL);
-	TAILQ_FOREACH(view, &g_view_list, next) {
-		if (primary->output == view->output) {
-			break;
-		}
-	}
 	free(primary);
-	if (TAILQ_END(&g_view_list) != view) {
-		TAILQ_REMOVE(&g_view_list, view, next);
-		TAILQ_INSERT_HEAD(&g_view_list, view, next);
-	}
 	bar_reset();
 }
 
@@ -1821,7 +1845,9 @@ main()
 					for (i = 0; num > i; ++i) {
 						if (j[0] == (int)w[i]) {
 							client_add_details(
-							    w[i], j + 1);
+							    w[i],
+							    XCB_WINDOW_NONE, j
+							    + 1);
 							w[i] = XCB_NONE;
 							break;
 						}
@@ -1830,13 +1856,13 @@ main()
 			}
 			if (XCB_NONE != focus_id) {
 				g_focus = client_get(focus_id, NULL);
-				client_focus(g_focus, 1, 1);
+				client_focus(g_focus, 1, 1, 0);
 			}
 			fclose(file);
 		}
 		for (i = 0; num > i; ++i) {
 			if (XCB_NONE != w[i]) {
-				client_add(w[i]);
+				client_add(w[i], XCB_WINDOW_NONE);
 			}
 		}
 		free(tree_reply);
@@ -1906,10 +1932,11 @@ main()
 
 			TAILQ_FOREACH(c, &g_client_list[i], next) {
 				fprintf(file, "%ld %d %d %d %d %d %d %d %d "
-				    "%d\n", (long)c->window, (int)i,
+				    "%d %d\n", (long)c->window, (int)i,
 				    c->is_urgent, c->x, c->y, c->maximize,
-				    c->max_old_x, c->max_old_y,
-				    c->max_old_width, c->max_old_height);
+				    c->border_width, c->max_old_x,
+				    c->max_old_y, c->max_old_width,
+				    c->max_old_height);
 			}
 		}
 		fclose(file);

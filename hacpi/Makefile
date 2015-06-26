@@ -12,9 +12,8 @@ ACPI=hacpi_acpid
 
 install:
 	mkdir -p $(PREFIX)/bin
-	cp -f $(BINS) $(PREFIX)/bin
-	chmod 755 $(addprefix $(PREFIX)/bin/,$(BINS))
+	install $(BINS) $(PREFIX)/bin
 	cp -f $(ACPI) /etc/acpi/events
 
 uninstall:
-	rm -f $(addprefix $(PREFIX)/bin/,$(BINS)) $(addprefix /etc/acpi/events/,$(CFGS))
+	rm -f $(addprefix $(PREFIX)/bin/,$(BINS)) /etc/acpi/events/$(ACPI)

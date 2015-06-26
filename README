@@ -12,6 +12,11 @@ when events don't work, mainly in order to save battery time. Other than what
 was stated in the intro.
 
 
+hapm
+----
+APM scripts for handling OpenBSD APM related things.
+
+
 hlinuxbat
 ---------
 A little program to fetch and print the AC and battery status to stdout under
