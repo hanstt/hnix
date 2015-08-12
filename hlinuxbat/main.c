@@ -165,7 +165,7 @@ main(int argc, char **argv)
 	}
 	printf(" %d%%", percentage);
 	if (0 != rate) {
-		printf(" (%d:%02d)", remain / rate, remain / (rate / 60) %
+		printf(" (%dh %02dm)", remain / rate, remain / (rate / 60) %
 		    60);
 	}
 	return 0;

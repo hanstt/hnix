@@ -3,7 +3,7 @@ PREFIX=~/opt
 CC=ccache gcc
 
 CPPFLAGS:=-I/usr/local/include -I$(HUTILS_PATH)/include `pkg-config --cflags xcb`
-CFLAGS:=-ansi -ggdb -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow #-Wuninitialized
+CFLAGS:=-ansi -ggdb -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow
 LDFLAGS:=`pkg-config --libs xcb-icccm xcb-keysyms xcb-randr` -L/usr/local/lib -liconv
 
 all: hwm

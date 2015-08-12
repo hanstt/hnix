@@ -38,23 +38,23 @@ main(int argc, char **argv)
 	int type;
 
 	type = TYPE_NONE;
-	capacity = 0.0;
-	now = 0.0;
-	rate = 0.0;
+	capacity = 0.;
+	now = 0.;
+	rate = 0.;
 
 	pip = popen("sysctl " PATH_SYSCTL, "r");
 	if (NULL == pip) {
 		printf("No bat (%s)", strerror(errno));
 		return 0;
 	}
-	while (fgets(buf, sizeof buf, pip) != NULL) {
+	while (NULL != fgets(buf, sizeof buf, pip)) {
 		if (MATCH("raw0=1")) {
 			type = TYPE_BAT;
 		}
 		if (MATCH("raw0=2")) {
 			type = TYPE_AC;
 		}
-		if (MATCH("watthour0=")) {
+		if (MATCH("watthour4=")) {
 			capacity = strtod(buf + 30, NULL);
 			continue;
 		}
@@ -67,12 +67,12 @@ main(int argc, char **argv)
 			continue;
 		}
 	}
-	fclose(pip);
+	pclose(pip);
 
-	percentage = (100.0 * now) / capacity;
+	percentage = (100. * now) / capacity;
 	if (TYPE_BAT == type) {
-		percentage_min = 2 == argc ? strtol(argv[1], NULL, 10) : 0;
-		percentage_min = 5 > percentage_min ? 5 : percentage_min;
+		percentage_min = 2 == argc ? strtod(argv[1], NULL) : 0.;
+		percentage_min = 5. > percentage_min ? 5. : percentage_min;
 		if (percentage <= percentage_min) {
 			printf("!");
 		}
@@ -83,8 +83,8 @@ main(int argc, char **argv)
 		remain = capacity - now;
 	}
 	printf(" %d%%", (int)percentage);
-	if (0 != rate) {
-		printf(" (%d:%02d)", (int)(remain / rate), (int)(remain /
+	if (1e-3 < rate) {
+		printf(" (%dh %02dm)", (int)(remain / rate), (int)(remain /
 		    (rate / 60)) % 60);
 	}
 	return 0;

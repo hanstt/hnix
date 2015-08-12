@@ -131,10 +131,10 @@ ask(struct PackageList *const a_list, size_t a_list_length)
 int
 is_manual(char const *const a_name)
 {
-	char *path;
 	FILE *file;
+	char *path;
 	size_t name_len, path_len;
-	int num;
+	int num, ret;
 
 	name_len = strlen(a_name);
 	path_len = sizeof(DB_PATH)-1 + name_len + 1 + sizeof(CONTENTS)-1 + 1;
@@ -150,15 +150,17 @@ is_manual(char const *const a_name)
 		char line[256];
 
 		if (NULL == fgets(line, sizeof line, file)) {
-			fclose(file);
-			return 0;
+			ret = 0;
+			break;
 		}
 		if (0 == strncmp(line, OPTION_MANUAL, sizeof OPTION_MANUAL -
 		    1)) {
-			fclose(file);
-			return 1;
+			ret = 1;
+			break;
 		}
 	}
+	fclose(file);
+	return ret;
 }
 
 int
