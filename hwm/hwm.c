@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2014-2015 Hans Toshihide Törnqvist <hans.tornqvist@gmail.com>
+ * Copyright (c) 2014, 2015
+ * Hans Toshihide Törnqvist <hans.tornqvist@gmail.com>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -178,69 +179,7 @@ static int			text_width(struct String const *);
 static void			view_clear(void);
 static struct View const	*view_find(int, int);
 
-/* Config { */
-
-#define BORDER_FOCUS "red"
-#define BORDER_UNFOCUS "blue"
-#define BAR_BG "gray10"
-#define BAR_FG "white"
-#define URGENT1_BG "red"
-#define URGENT1_FG "white"
-#define URGENT2_BG "yellow"
-#define URGENT2_FG "black"
-#define BOOKEND_LENGTH 3
-#define FONT_FACE "fixed"
-#define MOD_MASK1 XCB_MOD_MASK_4
-#define MOD_MASK2 (XCB_MOD_MASK_1 | XCB_MOD_MASK_4)
-#define MOD_MASK3 (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_4)
-#define PERSIST_FILE "/tmp/hwm.txt"
-#define SNAP_MARGIN 6
-#define TEXT_PADDING 4
-#define TIMEOUT_NORMAL 3000
-#define TIMEOUT_BLINK 200
-#define WORKSPACE_NUM 6
-
-static char const *c_workspace_label[WORKSPACE_NUM] = {
-	"1", "2", "3", "4", "5", "6"
-};
-static char const *c_st[] = {"st", NULL};
-static char const *c_dmenu[] = { "dmenu_run", "-i", "-fn", FONT_FACE, "-nb",
-	BAR_BG, "-nf", BAR_FG, "-sb", BAR_FG, "-sf", BAR_BG, NULL};
-#define BIND_WORKSPACE(keysym, id) \
-	{keysym, MOD_MASK1, action_workspace_select, {id, NULL}},\
-	{keysym, MOD_MASK2, action_client_relocate, {id, NULL}}
-#define BIND_CLIENT_DIR(keysym, dir) \
-	{keysym, MOD_MASK1, action_client_jump, {dir, NULL}},\
-	{keysym, MOD_MASK2, action_client_expand, {dir, NULL}},\
-	{keysym, MOD_MASK3, action_client_grow, {dir, NULL}}
-static struct KeyBind c_key_bind[] = {
-	{XK_q, MOD_MASK2, action_quit, {RUN_QUIT, NULL}},
-	{XK_a, MOD_MASK2, action_quit, {RUN_RESTART, NULL}},
-	{XK_x, MOD_MASK2, action_kill, {0, NULL}},
-	BIND_WORKSPACE(XK_w, 0),
-	BIND_WORKSPACE(XK_f, 1),
-	BIND_WORKSPACE(XK_p, 2),
-	BIND_WORKSPACE(XK_r, 3),
-	BIND_WORKSPACE(XK_s, 4),
-	BIND_WORKSPACE(XK_t, 5),
-	BIND_CLIENT_DIR(XK_Up, DIR_NORTH),
-	BIND_CLIENT_DIR(XK_Left, DIR_WEST),
-	BIND_CLIENT_DIR(XK_Right, DIR_EAST),
-	BIND_CLIENT_DIR(XK_Down, DIR_SOUTH),
-	{XK_space, MOD_MASK1, action_client_maximize, {MAX_BOTH, NULL}},
-	{XK_space, MOD_MASK2, action_client_maximize, {MAX_VERT, NULL}},
-	{XK_Tab, MOD_MASK1, action_client_browse, {0, NULL}},
-	{XK_m, MOD_MASK1, action_furnish, {0, NULL}},
-	{XK_a, MOD_MASK1, action_exec, {0, c_st}},
-	{XK_g, MOD_MASK1, action_exec, {0, c_dmenu}}
-};
-static struct ButtonBind c_button_bind[] = {
-	{CLICK_WORKSPACE, 1, 0, action_workspace_select},
-	{CLICK_CLIENT, 1, MOD_MASK1, action_client_move},
-	{CLICK_CLIENT, 3, MOD_MASK1, action_client_resize}
-};
-
-/* } */
+#include "config.h"
 
 typedef void (*EventHandler)(xcb_generic_event_t const *);
 
@@ -453,7 +392,7 @@ action_client_maximize(struct Arg const *const a_arg)
 {
 	struct View const *view;
 	enum Maximize const c_toggle = a_arg->i;
-	enum Maximize result;
+	enum Maximize want;
 
 	if (NULL == g_focus) {
 		return;
@@ -465,19 +404,19 @@ action_client_maximize(struct Arg const *const a_arg)
 			g_focus->max_old_y = g_focus->y;
 			g_focus->max_old_width = g_focus->width;
 			g_focus->max_old_height = g_focus->height;
-			result = c_toggle;
+			want = c_toggle;
 			break;
 		case MAX_BOTH:
-			result = MAX_BOTH == c_toggle ? MAX_NOPE : MAX_VERT;
+			want = MAX_BOTH == c_toggle ? MAX_NOPE : MAX_VERT;
 			break;
 		case MAX_VERT:
 			g_focus->max_old_x = g_focus->x;
-			result = MAX_VERT == c_toggle ? MAX_NOPE : MAX_BOTH;
+			want = MAX_VERT == c_toggle ? MAX_NOPE : MAX_BOTH;
 			break;
 		default:
 			abort();
 	}
-	switch (result) {
+	switch (want) {
 		case MAX_NOPE:
 			g_focus->x = g_focus->max_old_x;
 			g_focus->y = g_focus->max_old_y;
@@ -487,17 +426,20 @@ action_client_maximize(struct Arg const *const a_arg)
 		case MAX_BOTH:
 			g_focus->x = 0;
 			g_focus->y = g_font_height;
-			g_focus->width = view->width - 2;
-			g_focus->height = view->height - 2 - g_font_height;
+			g_focus->width = view->width - 2 *
+			    g_focus->border_width;
+			g_focus->height = view->height - g_font_height - 2 *
+			    g_focus->border_width;
 			break;
 		case MAX_VERT:
 			g_focus->x = g_focus->max_old_x;
 			g_focus->y = g_font_height;
 			g_focus->width = g_focus->max_old_width;
-			g_focus->height = view->height - 2 - g_font_height;
+			g_focus->height = view->height - g_font_height - 2 *
+			    g_focus->border_width;
 			break;
 	}
-	g_focus->maximize = result;
+	g_focus->maximize = want;
 	client_move(g_focus, VISIBLE);
 	client_resize(g_focus, 0);
 }
@@ -1141,25 +1083,21 @@ void
 client_resize(struct Client *const a_client, int const a_do_round)
 {
 	xcb_size_hints_t const *hints = &a_client->hints;
-	int min_width = 0, min_height = 0;
+	int base_width = 0, base_height = 0;
 
-	if (XCB_ICCCM_SIZE_HINT_P_MIN_SIZE & hints->flags) {
-		min_width = hints->min_width;
-		min_height = hints->min_height;
+	if (XCB_ICCCM_SIZE_HINT_BASE_SIZE & hints->flags) {
+		base_width = hints->base_width;
+		base_height = hints->base_height;
 	}
 	if (XCB_ICCCM_SIZE_HINT_P_RESIZE_INC & hints->flags) {
 		int wi = hints->width_inc;
 		int hi = hints->height_inc;
 		int f = a_do_round ? 1 : 0;
 
-		a_client->width = ((a_client->width - min_width + f * wi / 2)
-		    / wi) * wi + min_width;
-		a_client->height = ((a_client->height - min_height + f * hi /
-		    2) / hi) * hi + min_height;
-	}
-	if (XCB_ICCCM_SIZE_HINT_BASE_SIZE & hints->flags) {
-		a_client->width += hints->base_width;
-		a_client->height += hints->base_height;
+		a_client->width = ((a_client->width - base_width + f * wi / 2)
+		    / wi) * wi + base_width;
+		a_client->height = ((a_client->height - base_height + f * hi /
+		    2) / hi) * hi + base_height;
 	}
 	if (XCB_ICCCM_SIZE_HINT_P_ASPECT & hints->flags) {
 printf("Aspect = %d:%d .. %d:%d\n",
@@ -1168,8 +1106,8 @@ printf("Aspect = %d:%d .. %d:%d\n",
 fflush(stdout);
 	}
 	if (XCB_ICCCM_SIZE_HINT_P_MIN_SIZE & hints->flags) {
-		a_client->width = MAX(a_client->width, min_width);
-		a_client->height = MAX(a_client->height, min_height);
+		a_client->width = MAX(a_client->width, hints->min_width);
+		a_client->height = MAX(a_client->height, hints->min_height);
 	}
 	if (XCB_ICCCM_SIZE_HINT_P_MAX_SIZE & hints->flags) {
 		a_client->width = MIN(a_client->width, hints->max_width);

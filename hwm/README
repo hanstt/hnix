@@ -7,18 +7,18 @@ rewritten with XCB. It's a WM for me.
 
 Features
 --------
-Having very few features, stuff I don't need are not in.
-Almost as fast as lightning.
-Fewer than 2k LOC without being obfuscated.
-Stacking with "smart" placement and furnishing.
-Make windows jump around with the keyboard.
-Persistent window data at restarts.
-Very few mouse-dependent actions.
+*) Having very few features, stuff I don't need are not in.
+*) Almost as fast as lightning.
+*) Fewer than 2k LOC without being obfuscated.
+*) Stacking with "smart" placement and furnishing.
+*) Make windows jump around with the keyboard.
+*) Persistent window data at restarts.
+*) Very few mouse-dependent actions.
 
 
-Requirements
-------------
-You will need XCB and a generally healthy Linux system.
+Prerequisites
+-------------
+You will need XCB and a generally healthy *nix system.
 
 
 Installation
@@ -36,16 +36,17 @@ Running hwm
 -----------
 Put this in your .xinitrc/.xsession/wherever hip Linux distros want it:
 
-	while true; do
-		<hwm install>/hwm &> /tmp/hwm.log
-		if [ 2 -eq $? ]; then
+	while true
+	do
+		<hwm install>/hwm
+		if [ 2 -ne $? ]
+		then
 			break
 		fi
 	done
 
 Exit codes:
-
-    0 - Just quit
+    0 - Graceful quit
     1 - Something bad happened
     2 - Restart
 
@@ -68,7 +69,7 @@ where the xsetroot.sh script can contain e.g.:
 This way you can edit the status text while hwm is running.
 
 If the status string starts with an exclamation mark, hwm will flash the
-status box, useful e.g. for low battery level warning (pst, see hpower).
+status box, useful e.g. for low battery level warning (pst, see h*power).
 
 
 Configuration
