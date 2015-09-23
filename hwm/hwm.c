@@ -572,10 +572,11 @@ action_exec(struct Arg const *const a_arg)
 void
 action_furnish(struct Arg const *const a_arg)
 {
-	struct Client *c;
+	struct Client *c, *prev_focus;
 	int num = 0;
 
 	(void)a_arg;
+	prev_focus = g_focus;
 	TAILQ_FOREACH(c, &g_client_list[g_workspace_cur], next) {
 		c->x += 100000;
 		++num;
@@ -600,6 +601,7 @@ action_furnish(struct Arg const *const a_arg)
 		}
 		client_place(best_client);
 	}
+	client_focus(prev_focus, 0, 0, 1);
 }
 
 void
@@ -905,8 +907,8 @@ client_focus(struct Client *const a_client, int const a_do_reorder, int const
 		xcb_change_window_attributes(g_conn, g_focus->window,
 		    XCB_CW_BORDER_PIXEL, g_values);
 	}
-	if (NULL == (g_focus = NULL != a_client ? a_client :
-	    TAILQ_FIRST(&g_client_list[g_workspace_cur]))) {
+	if (NULL == (g_focus = (NULL != a_client ? a_client :
+	    TAILQ_FIRST(&g_client_list[g_workspace_cur])))) {
 		return;
 	}
 
@@ -1741,7 +1743,7 @@ main()
 	if (NULL != (tree_reply = xcb_query_tree_reply(g_conn,
 	    xcb_query_tree(g_conn, g_root), NULL))) {
 		char line[80], *p;
-		int j[10];
+		int j[11];
 		xcb_window_t *w;
 		size_t num;
 
@@ -1757,11 +1759,11 @@ main()
 			fgets(line, sizeof line, file);
 			focus_id = strtol(line, NULL, 10);
 			while (NULL != fgets(line, sizeof line, file)) {
-				for (p = strtok(line, " "), i = 0; p && 10 >
+				for (p = strtok(line, " "), i = 0; p && 11 >
 				    i; p = strtok(NULL, " "), ++i) {
 					j[i] = strtol(p, NULL, 10);
 				}
-				if (10 == i) {
+				if (11 == i) {
 					for (i = 0; num > i; ++i) {
 						if (j[0] == (int)w[i]) {
 							client_add_details(

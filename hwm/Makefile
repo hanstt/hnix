@@ -13,6 +13,7 @@ hwm: hwm.c config.h Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 config.h: config.def.h
+	mv $@ $@.bak
 	cp $< $@
 
 .PHONY: clean
