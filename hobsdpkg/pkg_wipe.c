@@ -115,7 +115,7 @@ ask(struct PackageList *const a_list, size_t a_list_length)
 		}
 		id = strtonum(buf, 0, a_list_length, &errstr);
 		if (NULL != errstr) {
-			fprintf(stderr, "Error: %s\n", errstr);
+			fprintf(stderr, "strtonum: %s\n", errstr);
 			continue;
 		}
 		TAILQ_FOREACH(pkg, a_list, next) {

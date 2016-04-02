@@ -2,8 +2,11 @@ PREFIX=~/opt
 
 CC=ccache gcc
 
-CPPFLAGS:=-I/usr/local/include -I$(HUTILS_PATH)/include `pkg-config --cflags xcb`
-CFLAGS:=-ansi -ggdb -pedantic-errors -Wall -Werror -Wextra -Wmissing-prototypes -Wshadow
+include $(HTOOLS_PATH)/hgmake/build_dir.mk
+
+CPPFLAGS:=-I/usr/local/include -I$(HTOOLS_PATH)/hutils/include -I$(HTOOLS_PATH)/hutils/$(BUILD_DIR) `pkg-config --cflags xcb`
+include $(HTOOLS_PATH)/hgmake/strict_cflags.mk
+CFLAGS:=-ggdb $(CFLAGS)
 LDFLAGS:=`pkg-config --libs xcb-icccm xcb-keysyms xcb-randr` -L/usr/local/lib -liconv
 
 .PHONY: all
@@ -13,7 +16,7 @@ hwm: hwm.c config.h Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 config.h: config.def.h
-	mv $@ $@.bak
+	test -f $@ && mv $@ $@.bak
 	cp $< $@
 
 .PHONY: clean
