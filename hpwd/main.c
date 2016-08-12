@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #define BUF_SIZE 256
+#define MAX_LEN 24
 
 int
 main(void)
@@ -27,7 +28,7 @@ main(void)
 	char buf[BUF_SIZE];
 	char *head;
 	char const *home;
-	size_t homelen;
+	size_t headlen, homelen;
 	int i, level;
 
 	if (NULL == getcwd(buf, BUF_SIZE)) {
@@ -53,8 +54,10 @@ main(void)
 	}
 
 	level = 0;
-	for (i = strlen(head) - 1; 0 < i; --i) {
-		if (head[i] == '/' && 2 == ++level) {
+	headlen = strlen(head);
+	for (i = headlen - 1; 0 < i; --i) {
+		if (MAX_LEN < headlen - i ||
+		    ('/' == head[i] && 2 == ++level)) {
 			break;
 		}
 	}
