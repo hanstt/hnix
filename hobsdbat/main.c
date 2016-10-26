@@ -84,8 +84,8 @@ main(int argc, char **argv)
 	}
 	printf(" %d%%", (int)percentage);
 	if (1e-3 < rate) {
-		printf(" (%dh %02dm)", (int)(remain / rate), (int)(remain /
-		    (rate / 60)) % 60);
+		printf(",%d:%02d", (int)(remain / rate), (int)(remain / (rate
+		    / 60)) % 60);
 	}
 	return 0;
 }

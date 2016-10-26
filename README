@@ -47,3 +47,15 @@ hwm
 My little xcb-based window manager, based on dwm but 100% rewritten. Has its
 own README, because although I do what I can to keep it simple and small, it
 is still large.
+
+
+WIP
+===
+
+
+h202020
+-------
+Little notifier for the 20-20-20 rule. A small top-level window pops up every
+20 minutes, reminding you to look 20 m (originally 20 ft, but I don't know
+what that unit means) for 20 s. The timer resets when the window is manually
+closed.
