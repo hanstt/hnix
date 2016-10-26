@@ -42,6 +42,14 @@ for the bash prompt, e.g.:
  PS1="\u@\h:\$(~/opt/bin/hpwd)\$"
 
 
+hsct
+----
+
+Monitor temperature setter using Unangst's little sct. Uses an infinite loop
+shell script with some important timestamps and night + day color temps for
+running in the background.
+
+
 hwm
 ---
 My little xcb-based window manager, based on dwm but 100% rewritten. Has its
