@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2015
+ * Copyright (c) 2014, 2015, 2017
  * Hans Toshihide Törnqvist <hans.tornqvist@gmail.com>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
@@ -41,30 +41,39 @@
 #include <xcb/xcb_keysyms.h>
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
+#include <hutils/funcattr.h>
 #include <hutils/macros.h>
 #include <hutils/memory.h>
 
+#define CALLOC_ASSERT(ptr, num)\
+	do {\
+		CALLOC(ptr, num);\
+		if (NULL == ptr) {\
+			err(EXIT_FAILURE, __FILE__":%d: calloc(%d,%d)",\
+			    __LINE__, n_, (int)sizeof *ptr);\
+		}\
+	} WHILE_0
 #define CONVERGE(op, ref, test, cur) do {\
 	cur = ref op test && test op cur ? test : cur;\
-} HUTILS_COND(while, 0)
+} WHILE_0
 #define EVENT_MAX 30
 #define HEIGHT(c) ((c)->height + 2 * (c)->border_width)
-#define HWM_XCB_CHECKED(msg, func, args) do {\
-	xcb_void_cookie_t cookie_;\
-	xcb_generic_error_t *error_;\
-	cookie_ = func args;\
-	if (NULL != (error_ = xcb_request_check(g_conn, cookie_))) {\
-		fprintf(stderr, msg" (%u,%u,0x%08x,%d,%d).\n",\
-		    error_->response_type, error_->error_code,\
-		    error_->resource_id, error_->minor_code,\
-		    error_->major_code);\
-		free(error_);\
-		exit(EXIT_FAILURE);\
-	}\
-} HUTILS_COND(while, 0)
-#define SNAP(op, ref, test, margin) do {\
-	test = ref op test && test op margin ? ref : test;\
-} HUTILS_COND(while, 0)
+#define HWM_XCB_CHECKED(msg, func, args)\
+	do {\
+		xcb_void_cookie_t cookie_;\
+		xcb_generic_error_t *error_;\
+		cookie_ = func args;\
+		if (NULL != (error_ = xcb_request_check(g_conn, cookie_))) {\
+			fprintf(stderr, msg" (%u,%u,0x%08x,%d,%d).\n",\
+			    error_->response_type, error_->error_code,\
+			    error_->resource_id, error_->minor_code,\
+			    error_->major_code);\
+			free(error_);\
+			exit(EXIT_FAILURE);\
+		}\
+	} WHILE_0
+#define SNAP(op, ref, test, margin)\
+	test = ref op test && test op margin ? ref : test
 #define VIEW_BOTTOM(v) ((v)->y + (v)->height)
 #define VIEW_LEFT(v) ((v)->x)
 #define VIEW_RIGHT(v) ((v)->x + (v)->width)
@@ -1372,7 +1381,7 @@ event_map_request(xcb_map_request_event_t const *const a_event)
 	if (NULL == (c = client_get(a_event->window, NULL))) {
 		c = client_add(a_event->window, a_event->parent);
 	}
-	client_focus(c, 1, 1, 1);
+	client_focus(c, 1, 1, 0);
 }
 
 void
@@ -1529,7 +1538,7 @@ root_name_update()
 		char const *p = icccm.name;
 		size_t len = icccm.name_len;
 
-		if (NULL != p) {
+		if (0 != len) {
 			if ((g_is_root_urgent = ('!' == *p))) {
 				++p;
 				--len;
@@ -1600,8 +1609,12 @@ text_width(struct String const *const a_text)
 	reply = xcb_query_text_extents_reply(g_conn,
 	    xcb_query_text_extents(g_conn, g_font, a_text->length,
 	    (xcb_char2b_t const *)a_text->str), NULL);
-	width = reply->overall_width;
-	free(reply);
+	if (NULL == reply) {
+		width = 0;
+	} else {
+		width = reply->overall_width;
+		free(reply);
+	}
 	return c_text_padding + width + c_text_padding;
 }
 

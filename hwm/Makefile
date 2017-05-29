@@ -14,7 +14,7 @@ LIBS:=`pkg-config --libs xcb-icccm xcb-keysyms xcb-randr` -liconv
 all: hwm
 
 hwm: hwm.c config.h Makefile
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LIBS)
 
 config.h: config.def.h
 	test -f $@ && mv $@ $@.bak
