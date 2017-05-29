@@ -80,7 +80,10 @@ ask(struct PackageList *const a_list, size_t a_list_length)
 		printf("> ");
 		fflush(stdout);
 		if (NULL == fgets(buf, sizeof buf, stdin)) {
-			continue;
+			TAILQ_FOREACH(pkg, a_list, next) {
+				pkg->do_delete = 0;
+			}
+			return;
 		}
 		{
 			size_t i;
