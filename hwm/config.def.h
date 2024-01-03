@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2015 Hans Toshihide Törnqvist <hans.tornqvist@gmail.com>
+ * Copyright (c) 2015, 2024
+ * Hans Toshihide Törnqvist <hans.tornqvist@gmail.com>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -14,10 +15,6 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-static char const	*c_app_dmenu[] = { "dmenu_run", "-i", "-fn",
-	c_font_face, "-nb", c_bar_bg, "-nf", c_bar_fg, "-sb", c_bar_fg, "-sf",
-	c_bar_bg, NULL};
-static char const	*c_app_term[] = {"uxterm", NULL};
 static char const	c_bar_bg[] = "black";
 static char const	c_bar_fg[] = "white";
 static char const	c_border_focus[] = "red";
@@ -35,6 +32,10 @@ static char const	c_urgent2_fg[] = "black";
 static char const	*c_workspace_label[] = {
 	"1", "2", "3", "4", "5", "6"
 };
+static char const	*c_app_dmenu[] = { "dmenu_run", "-i", "-fn",
+	c_font_face, "-nb", c_bar_bg, "-nf", c_bar_fg, "-sb", c_bar_fg, "-sf",
+	c_bar_bg, NULL};
+static char const	*c_app_term[] = {"uxterm", NULL};
 
 #define	MOD_MASK1 XCB_MOD_MASK_4
 #define	MOD_MASK2 (XCB_MOD_MASK_1 | XCB_MOD_MASK_4)
@@ -46,7 +47,7 @@ static char const	*c_workspace_label[] = {
 	{keysym, MOD_MASK1, action_client_jump, {dir, NULL}},\
 	{keysym, MOD_MASK2, action_client_expand, {dir, NULL}},\
 	{keysym, MOD_MASK3, action_client_grow, {dir, NULL}}
-static struct KeyBind c_key_bind[] = {
+static struct KeyBind const c_key_bind[] = {
 	{XK_q, MOD_MASK2, action_quit, {RUN_QUIT, NULL}},
 	{XK_a, MOD_MASK2, action_quit, {RUN_RESTART, NULL}},
 	{XK_x, MOD_MASK2, action_kill, {0, NULL}},
@@ -64,10 +65,10 @@ static struct KeyBind c_key_bind[] = {
 	{XK_space, MOD_MASK2, action_client_maximize, {MAX_VERT, NULL}},
 	{XK_Tab, MOD_MASK1, action_client_browse, {0, NULL}},
 	{XK_m, MOD_MASK1, action_furnish, {0, NULL}},
-	{XK_a, MOD_MASK1, action_exec, {0, c_term}},
-	{XK_g, MOD_MASK1, action_exec, {0, c_dmenu}}
+	{XK_a, MOD_MASK1, action_exec, {0, c_app_term}},
+	{XK_g, MOD_MASK1, action_exec, {0, c_app_dmenu}}
 };
-static struct ButtonBind c_button_bind[] = {
+static struct ButtonBind const c_button_bind[] = {
 	{CLICK_WORKSPACE, 1, 0, action_workspace_select},
 	{CLICK_CLIENT, 1, MOD_MASK1, action_client_move},
 	{CLICK_CLIENT, 3, MOD_MASK1, action_client_resize}

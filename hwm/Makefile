@@ -1,14 +1,9 @@
-PREFIX=~/opt
+PREFIX=$(HOME)/opt
 
-CC?=ccache gcc
-
-include $(HTOOLS_PATH)/hgmake/build_dir.mk
-
-CPPFLAGS:=-I/usr/local/include -I$(HTOOLS_PATH)/hutils/include -I$(HTOOLS_PATH)/hutils/$(BUILD_DIR) `pkg-config --cflags xcb`
-include $(HTOOLS_PATH)/hgmake/strict_cflags.mk
-CFLAGS:=$(CFLAGS) -ggdb
+CPPFLAGS:=-I/usr/local/include $(shell pkg-config --cflags xcb)
+CFLAGS:=-ansi -ggdb -pedantic-errors -Wall -Werror -Wformat=2 -Wmissing-prototypes -Wshadow -Wstrict-prototypes
 LDFLAGS:=-L/usr/local/lib
-LIBS:=`pkg-config --libs xcb-icccm xcb-keysyms xcb-randr` -liconv
+LIBS:=$(shell pkg-config --libs xcb-icccm xcb-keysyms xcb-randr)
 
 .PHONY: all
 all: hwm
@@ -17,7 +12,7 @@ hwm: hwm.c config.h Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LIBS)
 
 config.h: config.def.h
-	test -f $@ && mv $@ $@.bak
+	if test -f $@; then mv $@ $@.bak; fi
 	cp $< $@
 
 .PHONY: clean
@@ -25,7 +20,7 @@ clean:
 	rm -f hwm
 
 .PHONY: install
-install: all
+install: hwm
 	mkdir -p $(PREFIX)/bin
 	install hwm $(PREFIX)/bin
 

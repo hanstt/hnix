@@ -8,12 +8,12 @@ rewritten with XCB. It's a WM for me.
 Features
 --------
 *) Having very few features, stuff I don't need are not in.
-*) Almost as fast as lightning.
-*) Fewer than 2k LOC without being obfuscated.
+*) Snappy, no animations.
+*) Fewer than 2k LOC without being obfuscated (debatable).
 *) Stacking with "smart" placement and furnishing.
 *) Make windows jump around with the keyboard.
-*) Persistent window data at restarts.
-*) Very few mouse-dependent actions.
+*) Persistent window metadata at restarts.
+*) Very few mouse-only actions.
 
 
 Prerequisites
@@ -29,20 +29,15 @@ At long last, enter the following command to build and install hwm:
 
     make install
 
-Wait, why isn't it this easy with all programs?
-
 
 Running hwm
 -----------
-Put this in your .xinitrc/.xsession/wherever hip Linux distros want it:
+Put this in .xinitrc/.xsession/wherever hip Linux distros want this stuff:
 
 	while true
 	do
 		<hwm install>/hwm
-		if [ 2 -ne $? ]
-		then
-			break
-		fi
+		[ 2 -eq $? ] || break
 	done
 
 Exit codes:
@@ -50,35 +45,39 @@ Exit codes:
     1 - Something bad happened
     2 - Restart
 
-In order to display info in the bar instead of seeing the beautiful <hwm> art,
-you can do something like this:
+In order to display info in the bar instead of seeing the <hwm> art, you can
+do something like this:
 
-	while true; do
-		./<scripts directory>/xsetroot.sh
+	while true
+	do
+		<some-path>/xsetroot.bash
 	done &
 	root_loop_pid=$!
-	<Do the above hwm loop here>
+
+	# Do the above hwm loop here
+
 	kill $root_loop_pid
 
-where the xsetroot.sh script can contain e.g.:
+where the xsetroot.bash script contains e.g.:
 
-	#!/bin/sh
-	xsetroot -name "`date`"
+	#!/bin/bash
+	xsetroot -name "$(date)"
 	sleep 5
 
 This way you can edit the status text while hwm is running.
 
 If the status string starts with an exclamation mark, hwm will flash the
-status box, useful e.g. for low battery level warning (pst, see h*power).
+status box, useful e.g. for low battery level warning (pst, see h*bat).
 
 
 Configuration
 -------------
 hwm is configured by editing the source code, the most interesting configs
-have been isolated near the top. Rebuild, install and restart hwm and the new
-configs will be active.
+are sheltered in config.h, which is renewed from config.def.h.
+'c_font_face' should be set to an entry listed by 'xlsfonts'.
+Rebuild, install, and restart hwm, and the new configs will be active.
 
 
 I implemented a cool new feature!
 ---------------------------------
-Great! I don't want to sound like a jerk, but I don't want it :p
+Great! I don't want to sound like a jerk, but I don't want it :p Git it!
